@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element -- remote Qloo/Amazon images */
 
 import { useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, ExternalLink, Gift as GiftIcon, LoaderCircle, Pencil, RotateCcw, Scale, Sparkles, Star, Trash2 } from "lucide-react";
+import { Check, ChevronDown, CircleAlert, ExternalLink, Gift as GiftIcon, LoaderCircle, Pencil, RotateCcw, Scale, Sparkles, Star, Trash2 } from "lucide-react";
 import { MARKETS, defaultBudget, formatMoney, marketFor } from "@/lib/markets";
 import type { AgentEvent, AgentName, BaselineIdea, Gift, GiftRun, Occasion, Persona, QlooEntity, TasteProfile } from "@/lib/types";
 import { useApp } from "./App";
@@ -196,17 +196,21 @@ export function PersonaView({ persona }: { persona: Persona }) {
             </div>
             <label className="flex min-w-0 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
               <span className="shrink-0 text-sm text-sub sm:w-16">Shop on</span>
-              <select
-                value={market.code}
-                onChange={(e) => setMarket(marketFor(e.target.value))}
-                className="w-full min-w-0 rounded-full border border-line bg-base px-3.5 py-1.5 text-sm outline-none hover:border-sub sm:w-auto"
-              >
-                {MARKETS.map((m) => (
-                  <option key={m.code} value={m.code}>
-                    {m.domain} ({m.name})
-                  </option>
-                ))}
-              </select>
+              {/* The native arrow sits differently in every browser, so draw our own at a fixed inset. */}
+              <span className="relative w-full min-w-0 sm:w-auto">
+                <select
+                  value={market.code}
+                  onChange={(e) => setMarket(marketFor(e.target.value))}
+                  className="w-full min-w-0 appearance-none rounded-full border border-line bg-base py-1.5 pl-3.5 pr-10 text-sm outline-none hover:border-sub sm:w-auto"
+                >
+                  {MARKETS.map((m) => (
+                    <option key={m.code} value={m.code}>
+                      {m.domain} ({m.name})
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-sub" aria-hidden />
+              </span>
             </label>
           </div>
           <div className="flex items-center gap-2">
