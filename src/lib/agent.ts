@@ -496,6 +496,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
   ];
   let ideas: Idea[] = [];
   let explores = 0;
+  let revisedForGender = false;
 
   try {
     for (let turn = 0; turn < STRATEGIST_TURNS && !ideas.length; turn++) {
@@ -586,13 +587,26 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
           });
         } else if (call.function.name === "submit_plan") {
           const args = parseArgs<{ ideas: Idea[] }>(call.function.arguments);
-          ideas = (args?.ideas ?? []).filter((i) => i.query?.trim() && i.why?.trim()).slice(0, GIFT_COUNT);
-          if (!ideas.length)
+          const planned = (args?.ideas ?? []).filter((i) => i.query?.trim() && i.why?.trim()).slice(0, GIFT_COUNT);
+          // Ideas go through the same gender rule as listings ("men's climbing jacket" for Alex).
+          const fits = (i: Idea) => fitsGender({ title: `${i.idea} ${i.query}`, url: "", source: "serpapi" }, persona.gender);
+          const misfits = planned.map((i, n) => (fits(i) ? 0 : n + 1)).filter(Boolean);
+          if (misfits.length && !revisedForGender) {
+            revisedForGender = true;
             strategist.push({
               role: "tool",
               tool_call_id: call.id,
-              content: "The plan was empty or missing queries. Submit it again.",
+              content: `Idea ${misfits.join(", ")} ${misfits.length > 1 ? "are" : "is"} gendered for someone other than ${persona.name}${persona.gender === "female" || persona.gender === "male" ? ` (${persona.gender})` : " (gender not given, so keep everything gender-neutral)"}. Replace ${misfits.length > 1 ? "them" : "it"} and submit the full plan again.`,
             });
+          } else {
+            ideas = planned.filter(fits);
+            if (!ideas.length)
+              strategist.push({
+                role: "tool",
+                tool_call_id: call.id,
+                content: "The plan was empty or missing queries. Submit it again.",
+              });
+          }
         } else {
           strategist.push({
             role: "tool",
