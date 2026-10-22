@@ -198,9 +198,9 @@ Then call submit_gifts with one pick per idea. "reasoning" is 2 sentences to the
 }
 
 const CHECK_PROMPT = `You check gift picks before they're shown. For each numbered pair, answer false only when the Amazon listing is clearly not the product the idea describes:
-- a different kind of product: a book, songbook or poster about an album instead of the record (titles in the "33 1/3" series are books), merchandise or a book instead of a game;
+- a different kind of product: a book, songbook or poster about an album instead of the record, merchandise or a book instead of a game;
 - a different brand, title or artist than the one the idea names.
-Listing titles are often terse or omit the brand or artist; that is fine. Another model, generation, size, color or edition of the named product (Now vs Now+, a different pack size) is also fine, but a translated or foreign-language edition of a book is not. When unsure, answer true.
+Listing titles are often terse or omit the brand or artist; that is fine. Another model, generation, size, color or edition of the named product (Now vs Now+, a different pack size) is also fine, Any English edition of a named book is fine, including film tie-in covers and blurbs that mention the movie, but a translated or foreign-language edition is not. When unsure, answer true.
 Reply as JSON: {"checks": [{"reason": "a few words", "ok": true}, ...]} with one entry per pair, in order. Give the reason first.`;
 
 // Brands Qloo matches on taste but that don't sell giftable things on Amazon (Land Rover, Instagram, airlines).
@@ -323,6 +323,7 @@ async function* llm(agent: AgentName, opts: ChatOptions): AsyncGenerator<AgentEv
   }
 }
 
+const ABOUT_AN_ALBUM = /\(33 1\/3\)|33⅓/;
 const USED = /\b(renewed|refurbished|pre-owned|preowned|used)\b/i;
 
 // Listings explicitly made for one gender. "women's" must not count as "men's".
@@ -408,8 +409,9 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
   /** Search the persona's store, dropping second-hand listings and ones gendered for someone else. */
   const shop = async (query: string): Promise<Product[]> => {
     const list = await searchProducts(query, { maxPrice: occasion.budget, domain: market.domain });
-    // A gift should arrive new: drop renewed, refurbished and used listings when anything else exists.
-    const fresh = list.filter((p) => !USED.test(p.title));
+    // A gift should arrive new: drop renewed, refurbished and used listings when anything else exists,
+    // and books from the "33 1/3" series, which search returns for album queries.
+    const fresh = list.filter((p) => !USED.test(p.title) && !ABOUT_AN_ALBUM.test(p.title));
     const fitting = (fresh.length ? fresh : list).filter((p) => fitsGender(p, persona.gender));
     return fitting.length ? fitting : [searchLink(query, market.domain)];
   };
@@ -839,6 +841,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
   if (pending.length) {
     yield { type: "step", id: "check", agent: "shopper", label: "Double-checking each listing against its idea", status: "running" };
     let swapped = 0;
+    const why: string[] = [];
     try {
       for (let round = 0; round < 2 && pending.length; round++) {
         const reply = yield* llm("shopper", {
@@ -851,11 +854,13 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
             { role: "user", content: pending.map((i, k) => `${k + 1}. Idea: ${giftIdeas[i].idea.idea}\n   Listing: ${gifts[i].product.title}`).join("\n") },
           ],
         });
-        const ok = (parseArgs<{ checks?: { ok?: boolean }[] }>(reply.content ?? "")?.checks ?? []).map((c) => c?.ok);
+        const checks = parseArgs<{ checks?: { ok?: boolean; reason?: string }[] }>(reply.content ?? "")?.checks ?? [];
+        const ok = checks.map((c) => c?.ok);
         const recheck: number[] = [];
         pending.forEach((i, k) => {
           if (ok[k] !== false) return;
           const { idea, n } = giftIdeas[i];
+          if (checks[k]?.reason) why.push(`${idea.idea}: ${checks[k].reason}`);
           const taken = new Set(gifts.map((g) => g.product.url));
           const next = round === 0 ? candidates(results[n], occasion.budget).find((p) => !tried[i].has(p.url) && !taken.has(p.url)) : undefined;
           // The shopper's words described the rejected listing, so use the strategist's.
@@ -876,7 +881,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
       id: "check",
       agent: "shopper",
       label: "Double-checked each listing against its idea",
-      detail: swapped ? `Swapped out ${swapped} listing${swapped > 1 ? "s" : ""} that didn't match` : "Every listing matches its idea",
+      detail: swapped ? `Swapped out ${swapped} listing${swapped > 1 ? "s" : ""} that didn't match. ${why.slice(0, 3).join("; ")}` : "Every listing matches its idea",
       status: "done",
     };
   }
