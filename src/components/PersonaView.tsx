@@ -159,11 +159,11 @@ export function PersonaView({ persona }: { persona: Persona }) {
 
       <div className="px-5 sm:px-8">
         <div className="flex flex-col gap-4 rounded-2xl bg-card p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex min-w-0 flex-col gap-3">
+          <div className="flex w-full min-w-0 flex-col gap-3 lg:w-auto">
             {!persona.isSelf && (
-              <div className="flex items-center gap-3">
-                <span className="w-16 shrink-0 text-sm text-sub">Gift for</span>
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div className="flex min-w-0 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+                <span className="shrink-0 text-sm text-sub sm:w-16">Gift for</span>
+                <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto">
                   <Pill active={!occasion.shared} onClick={() => setChoice({ ...choice, shared: false })}>
                     Just {persona.name}
                   </Pill>
@@ -174,9 +174,9 @@ export function PersonaView({ persona }: { persona: Persona }) {
                 </div>
               </div>
             )}
-            <div className="flex items-center gap-3">
-              <span className="w-16 shrink-0 text-sm text-sub">Occasion</span>
-              <div className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
+            <div className="flex min-w-0 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+              <span className="shrink-0 text-sm text-sub sm:w-16">Occasion</span>
+              <div className="no-scrollbar flex w-full min-w-0 gap-2 overflow-x-auto sm:w-auto sm:flex-wrap sm:overflow-visible">
                 {EVENTS.map((e) => (
                   <Pill key={e} active={occasion.event === e} onClick={() => setChoice({ ...choice, event: e })}>
                     {e}
@@ -184,9 +184,9 @@ export function PersonaView({ persona }: { persona: Persona }) {
                 ))}
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="w-16 shrink-0 text-sm text-sub">Budget</span>
-              <div className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
+            <div className="flex min-w-0 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+              <span className="shrink-0 text-sm text-sub sm:w-16">Budget</span>
+              <div className="no-scrollbar flex w-full min-w-0 gap-2 overflow-x-auto sm:w-auto sm:flex-wrap sm:overflow-visible">
                 {market.budgets.map((b) => (
                   <Pill key={b} active={occasion.budget === b} onClick={() => setChoice({ ...choice, budget: b })}>
                     Up to {formatMoney(b, market)}
@@ -194,12 +194,12 @@ export function PersonaView({ persona }: { persona: Persona }) {
                 ))}
               </div>
             </div>
-            <label className="flex items-center gap-3">
-              <span className="w-16 shrink-0 text-sm text-sub">Shop on</span>
+            <label className="flex min-w-0 flex-col items-start gap-1.5 sm:flex-row sm:items-center sm:gap-3">
+              <span className="shrink-0 text-sm text-sub sm:w-16">Shop on</span>
               <select
                 value={market.code}
                 onChange={(e) => setMarket(marketFor(e.target.value))}
-                className="rounded-full border border-line bg-base px-3.5 py-1.5 text-sm outline-none hover:border-sub"
+                className="w-full min-w-0 rounded-full border border-line bg-base px-3.5 py-1.5 text-sm outline-none hover:border-sub sm:w-auto"
               >
                 {MARKETS.map((m) => (
                   <option key={m.code} value={m.code}>
@@ -219,7 +219,7 @@ export function PersonaView({ persona }: { persona: Persona }) {
             <button
               onClick={start}
               disabled={run?.running}
-              className="flex flex-1 items-center justify-center gap-2 rounded-full bg-ribbon px-6 py-3 font-semibold text-ink transition-colors hover:bg-ribbon-deep disabled:opacity-70 lg:flex-none"
+              className="flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-full bg-ribbon px-6 py-3 font-semibold text-ink transition-colors hover:bg-ribbon-deep disabled:opacity-70 lg:flex-none"
             >
               {run?.running ? <LoaderCircle className="size-5 animate-spin" /> : <GiftIcon className="size-5" />}
               {run?.running ? "Finding gifts…" : hasGifts ? "Find new gifts" : "Find gifts"}
@@ -348,11 +348,11 @@ function AgentLog({ run }: { run: RunState }) {
 
 function GiftList({ gifts, name }: { gifts: Gift[]; name: string }) {
   return (
-    <ol className="grid gap-4 xl:grid-cols-2">
+    <ol className="grid grid-cols-1 gap-4 xl:grid-cols-2">
       {gifts.map((g, i) => {
         const isListing = g.product.source !== "search-link";
         return (
-          <li key={g.product.url + i} className="unwrap flex flex-col gap-4 rounded-2xl bg-card p-4 sm:flex-row sm:p-5" style={{ animationDelay: `${i * 70}ms` }}>
+          <li key={g.product.url + i} className="unwrap flex min-w-0 flex-col gap-4 rounded-2xl bg-card p-4 sm:flex-row sm:p-5" style={{ animationDelay: `${i * 70}ms` }}>
             <a href={g.product.url} target="_blank" rel="noopener noreferrer" className="shrink-0 self-start" aria-label={`${g.headline} on Amazon`}>
               {g.product.image ? (
                 <img src={g.product.image} alt="" className="size-28 rounded-xl bg-white object-contain p-2 sm:size-32" />
@@ -374,9 +374,9 @@ function GiftList({ gifts, name }: { gifts: Gift[]; name: string }) {
               {g.trail.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {g.trail.map((t, j) => (
-                    <span key={j} className="flex max-w-full items-center gap-1.5 rounded-full bg-hi py-0.5 pl-0.5 pr-2.5 text-xs">
-                      {t.image ? <img src={t.image} alt="" className="size-5 rounded-full object-cover" /> : <span className="size-5 rounded-full bg-line" />}
-                      <span className="truncate">
+                    <span key={j} className="flex max-w-full items-center gap-1.5 rounded-2xl bg-hi py-0.5 pl-0.5 pr-2.5 text-xs">
+                      {t.image ? <img src={t.image} alt="" className="size-5 shrink-0 rounded-full object-cover" /> : <span className="size-5 shrink-0 rounded-full bg-line" />}
+                      <span className="min-w-0">
                         {t.from && t.via ? (
                           <>
                             {t.from} <span className="text-sub">led to</span> {t.via}
@@ -385,7 +385,7 @@ function GiftList({ gifts, name }: { gifts: Gift[]; name: string }) {
                           (t.via ?? t.from)
                         )}
                       </span>
-                      {t.affinity ? <span className="font-semibold text-ribbon">{Math.round(t.affinity * 100)}% match</span> : null}
+                      {t.affinity ? <span className="shrink-0 whitespace-nowrap font-semibold text-ribbon">{Math.round(t.affinity * 100)}% match</span> : null}
                     </span>
                   ))}
                 </div>
