@@ -1,4 +1,5 @@
 import { cached } from "./cache";
+import { fetchRetry } from "./http";
 import type { Product } from "./types";
 
 const WEEK = 60 * 60 * 24 * 7;
@@ -29,7 +30,7 @@ interface SerpResult {
 
 async function serpapi(query: string, key: string, domain: string): Promise<Product[]> {
   const qs = new URLSearchParams({ engine: "amazon", k: query, amazon_domain: domain, api_key: key });
-  const res = await fetch(`https://serpapi.com/search.json?${qs}`);
+  const res = await fetchRetry(`https://serpapi.com/search.json?${qs}`);
   const data = (await res.json().catch(() => ({}))) as { organic_results?: SerpResult[]; error?: string };
   // SerpApi reports quota and key problems in `error`; an empty search is not an error.
   if (!res.ok || (data.error && !/hasn't returned any results/i.test(data.error))) {

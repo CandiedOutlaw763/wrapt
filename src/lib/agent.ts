@@ -1,5 +1,5 @@
 import { chat, RateLimited, type ChatOptions, type Message, type Reply, type ToolDef } from "./groq";
-import { insights, searchTags } from "./qloo";
+import { compareTaste, insights, searchTags } from "./qloo";
 import { searchLink, searchProducts } from "./products";
 import { formatMoney, marketFor, type Market } from "./markets";
 import type { AgentEvent, AgentName, Gift, Occasion, Persona, Product, QlooEntity, TasteLink, TasteProfile } from "./types";
@@ -188,6 +188,7 @@ function shopperPrompt(name: string, budget: string, gender: Persona["gender"]) 
   return `You are the personal shopper on Wrapt, a two-agent gift team. The taste strategist planned gift ideas for ${name}, and Amazon has been searched for each. For every idea, pick the best listing:
 - matches the idea and brand, at or under ${budget};
 - anything gendered must be ${fit};
+- the listing's product type must match the idea: a game idea needs the game itself, a record idea the record (not a songbook, poster or book about it);
 - if the idea names a specific book, album or film, the listing must be that exact work, not a similarly titled one;
 - if the idea names a brand, prefer a listing from that brand;
 - new rather than renewed or used when possible, decent rating, a real gift rather than an accessory or part;
@@ -195,6 +196,12 @@ function shopperPrompt(name: string, budget: string, gender: Persona["gender"]) 
 
 Then call submit_gifts with one pick per idea. "reasoning" is 2 sentences to the giver: why this suits ${name}'s taste (build on the strategist's why), then one concrete detail of this listing (format, edition, material, what's included). Don't mention price, budget, ratings or that it's new. No jargon.`;
 }
+
+const CHECK_PROMPT = `You check gift picks before they're shown. For each numbered pair, answer false only when the Amazon listing is clearly not the product the idea describes:
+- a different kind of product: a book, songbook or poster about an album instead of the record (titles in the "33 1/3" series are books), merchandise or a book instead of a game;
+- a different brand, title or artist than the one the idea names.
+Listing titles are often terse or omit the brand or artist; that is fine. Another model, generation, size, color or edition of the named product (Now vs Now+, a different pack size) is also fine, but a translated or foreign-language edition of a book is not. When unsure, answer true.
+Reply as JSON: {"checks": [{"reason": "a few words", "ok": true}, ...]} with one entry per pair, in order. Give the reason first.`;
 
 // Brands Qloo matches on taste but that don't sell giftable things on Amazon (Land Rover, Instagram, airlines).
 const NOT_GIFTABLE = /^(automotive|social networking service|airlines?|aviation|hospitality|restaurants?|food service|banking|insurance|telecommunications)$/i;
@@ -216,10 +223,20 @@ function personaFacts(p: Persona): string[] {
   ].filter(Boolean) as string[];
 }
 
-function strategistBrief(p: Persona, o: Occasion, profile: TasteProfile, market: Market): string {
-  const loves = profile.seeds.map((s) => `${s.name} (${s.type.replace("urn:entity:", "")}${s.tags?.length ? `; ${s.tags.slice(0, 4).join(", ")}` : ""})`);
+function strategistBrief(p: Persona, o: Occasion, profile: TasteProfile, market: Market, giver?: Persona): string {
+  const describe = (s: Persona["loves"][number]) => `${s.name} (${s.type.replace("urn:entity:", "")}${s.tags?.length ? `; ${s.tags.slice(0, 4).join(", ")}` : ""})`;
+  const loves = profile.seeds.map(describe);
+  const shared =
+    giver && profile.shared
+      ? [
+          `SHARED GIFT: ${giver.name} (the giver) wants gifts the two of them can enjoy together: something to listen to, watch, read, play, cook or do side by side. Every idea must appeal to both people; "from" may be a love of either person.`,
+          `GIVER'S LOVES: ${giver.loves.slice(0, 12).map(describe).join("; ")}`,
+          `TASTE OVERLAP (Qloo compare): ${profile.shared.tags.join(", ")}`,
+        ]
+      : [];
   const lines = [
     ...personaFacts(p),
+    ...shared,
     `OCCASION: ${o.event}. Budget: up to ${formatMoney(o.budget, market)}. Store: ${market.domain} (${market.name}).${o.note ? ` ${o.note}` : ""}`,
     `LOVES: ${loves.join("; ") || "(none)"}`,
     `HOBBIES: ${p.hobbies || "(none)"}`,
@@ -306,52 +323,11 @@ async function* llm(agent: AgentName, opts: ChatOptions): AsyncGenerator<AgentEv
   }
 }
 
-// Words that match almost any listing, so they don't count as evidence of relevance.
-const GENERIC = new Set([
-  "the",
-  "and",
-  "for",
-  "with",
-  "of",
-  "book",
-  "books",
-  "paperback",
-  "hardcover",
-  "edition",
-  "vinyl",
-  "record",
-  "set",
-  "pack",
-  "gift",
-  "new",
-  "classic",
-  "women's",
-  "men's",
-  "womens",
-  "mens",
-]);
-const keyWords = (s: string) =>
-  s
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // "Kånken" and "Kanken" should match
-    .toLowerCase()
-    .split(/[^a-z0-9']+/)
-    .filter((w) => w.length > 1 && !GENERIC.has(w));
-
-/**
- * Without the shopper's judgement, only trust a listing that clearly matches the search:
- * most of the query's distinctive words must appear in its title.
- */
-function matches(product: Product, idea: Idea): boolean {
-  const want = new Set(keyWords(idea.query));
-  const have = new Set(keyWords(product.title));
-  const overlap = [...want].filter((w) => have.has(w)).length;
-  return want.size > 0 && overlap / want.size >= 0.75;
-}
+const USED = /\b(renewed|refurbished|pre-owned|preowned|used)\b/i;
 
 // Listings explicitly made for one gender. "women's" must not count as "men's".
-const WOMENS = /\b(women'?s|womens|woman|ladies|lady'?s|girls'?|female)\b/i;
-const MENS = /\b(men'?s|mens|man'?s|boys'?|male|gentlemen'?s?)\b/i;
+const WOMENS = /\b(women'?s|womens|women|woman|ladies|lady'?s|girls'?|female)\b/i;
+const MENS = /\b(men'?s|mens|men|man'?s|boys'?|male|gentlemen'?s?)\b/i;
 
 /** Drop listings gendered for someone else; with no gender given, keep only ungendered ones. */
 function fitsGender(product: Product, gender: Persona["gender"]): boolean {
@@ -363,12 +339,13 @@ function fitsGender(product: Product, gender: Persona["gender"]): boolean {
   return !(forWomen !== forMen); // unisex listings mention both or neither
 }
 
-/** Without the shopper's judgement: the first in-budget listing that matches the idea, else an Amazon search. */
-function pickFallback(results: Product[], idea: Idea, budget: number, domain: string): Product {
-  return results.find((p) => p.source !== "search-link" && (p.price === undefined || p.price <= budget) && matches(p, idea)) ?? searchLink(idea.query, domain);
+/** In-budget real listings for an idea, best first; the listing check decides which one is right. */
+function candidates(results: Product[], budget: number): Product[] {
+  return results.filter((p) => p.source !== "search-link" && (p.price === undefined || p.price <= budget));
 }
 
-export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGenerator<AgentEvent> {
+export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Persona): AsyncGenerator<AgentEvent> {
+  const sharing = !!(occasion.shared && giver?.loves.length);
   // ── 1. Read the persona's taste ────────────────────────────────────────────
   yield {
     type: "step",
@@ -393,33 +370,58 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
     status: "done",
   };
 
+  // Shared gifts: find where the giver's taste meets the recipient's, then let both drive the sweep.
+  const giverSeeds = sharing ? giver!.loves.slice(0, 12) : [];
+  let sharedTags: { id: string; name: string }[] = [];
+  if (sharing) {
+    const label = `Comparing ${giver!.name}'s taste with ${persona.name}'s`;
+    yield { type: "step", id: "compare", agent: "qloo", label, status: "running" };
+    sharedTags = await compareTaste(
+      giverSeeds.map((s) => s.id),
+      entityIds,
+    ).catch(() => []);
+    yield {
+      type: "step",
+      id: "compare",
+      agent: "qloo",
+      label,
+      detail: sharedTags.length ? `In common: ${sharedTags.slice(0, 6).map((t) => t.name).join(", ")}` : "No clear overlap; using both tastes together",
+      status: "done",
+    };
+  }
+  const signalIds = [...new Set([...entityIds, ...giverSeeds.map((s) => s.id)])];
+  const sharedTagIds = sharedTags.slice(0, 6).map((t) => t.id);
+
   // ── 2. Sweep the taste graph across domains ───────────────────────────────
+  const graphLabel = sharing ? "Mapping where your tastes meet in Qloo's graph" : "Mapping their taste across Qloo's graph";
   yield {
     type: "step",
     id: "graph",
     agent: "qloo",
-    label: "Mapping their taste across Qloo's graph",
+    label: graphLabel,
     detail: "Brands, books, music, film, TV, games and podcasts",
     status: "running",
   };
 
   const demo = { age: persona.age, gender: persona.gender };
   const market = marketFor(occasion.market);
-  /** Search the persona's store, dropping listings gendered for someone else. */
+  /** Search the persona's store, dropping second-hand listings and ones gendered for someone else. */
   const shop = async (query: string): Promise<Product[]> => {
     const list = await searchProducts(query, { maxPrice: occasion.budget, domain: market.domain });
-    const fitting = list.filter((p) => fitsGender(p, persona.gender));
+    // A gift should arrive new: drop renewed, refurbished and used listings when anything else exists.
+    const fresh = list.filter((p) => !USED.test(p.title));
+    const fitting = (fresh.length ? fresh : list).filter((p) => fitsGender(p, persona.gender));
     return fitting.length ? fitting : [searchLink(query, market.domain)];
   };
   const sweeps = DOMAINS.map((d) =>
     insights({
       filterType: d.type,
-      entityIds,
-      tagIds: d.key === "brand" ? tagIds : undefined,
+      entityIds: signalIds,
+      tagIds: [...(d.key === "brand" ? tagIds : []), ...sharedTagIds],
       ...demo,
       take: d.take,
     })
-      .then((list) => [d.key, list.filter((e) => !entityIds.includes(e.id))] as const)
+      .then((list) => [d.key, list.filter((e) => !signalIds.includes(e.id))] as const)
       .catch((err) => {
         console.warn(`[agent] insights ${d.key} failed:`, (err as Error).message);
         return [d.key, []] as const;
@@ -438,7 +440,13 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
     );
   }
   const domains = Object.fromEntries(await Promise.all(sweeps)) as TasteProfile["domains"];
-  const profile: TasteProfile = { seeds, hobbyTags, dna: vibe(seeds), domains };
+  const profile: TasteProfile = {
+    seeds,
+    hobbyTags,
+    dna: vibe(seeds),
+    domains,
+    ...(sharing && { shared: { giver: giver!.name, tags: sharedTags.slice(0, 8).map((t) => t.name) } }),
+  };
 
   const total = Object.values(domains).reduce((n, l) => n + (l?.length ?? 0), 0);
   if (!total) {
@@ -446,7 +454,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
       type: "step",
       id: "graph",
       agent: "qloo",
-      label: "Mapping their taste across Qloo's graph",
+      label: graphLabel,
       detail: "Qloo returned no matches",
       status: "error",
     };
@@ -461,7 +469,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
     type: "step",
     id: "graph",
     agent: "qloo",
-    label: "Mapping their taste across Qloo's graph",
+    label: graphLabel,
     detail: `${total} matches. Top brands: ${topBrands.join(", ")}`,
     status: "done",
   };
@@ -482,7 +490,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
 
   const strategist: Message[] = [
     { role: "system", content: STRATEGIST_PROMPT },
-    { role: "user", content: strategistBrief(persona, occasion, profile, market) },
+    { role: "user", content: strategistBrief(persona, occasion, profile, market, sharing ? giver : undefined) },
   ];
   let ideas: Idea[] = [];
   let explores = 0;
@@ -770,7 +778,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
   }
 
   // ── 6. Assemble gifts: shopper picks first, plan + top listing for any gaps ─
-  const seedPool: QlooEntity[] = seeds.map((s) => ({
+  const seedPool: QlooEntity[] = [...seeds, ...giverSeeds].map((s) => ({
     id: s.id,
     name: s.name,
     type: s.type,
@@ -796,10 +804,11 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
   };
 
   const gifts: Gift[] = [];
+  const giftIdeas: { idea: Idea; n: number }[] = [];
   const usedProducts = new Set<string>();
   ideas.forEach((idea, n) => {
     const pick = picks.find((p) => Number(p.idea) === n + 1 && !usedProducts.has(p.product_ref.trim()));
-    const product = pick ? products.get(pick.product_ref.trim())! : pickFallback(results[n], idea, occasion.budget, market.domain);
+    const product = pick ? products.get(pick.product_ref.trim())! : (candidates(results[n], occasion.budget)[0] ?? searchLink(idea.query, market.domain));
     if (!product || usedProducts.has(product.url)) return;
     usedProducts.add(pick?.product_ref.trim() ?? product.url);
     usedProducts.add(product.url);
@@ -809,6 +818,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
       reasoning: pick?.reasoning?.trim() || idea.why,
       trail: trailFor(idea),
     });
+    giftIdeas.push({ idea, n });
   });
 
   yield {
@@ -819,6 +829,58 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
     detail: picks.length ? undefined : "Used the strategist's picks directly",
     status: "done",
   };
+
+  // ── 7. Check every listing really is the product its idea describes ──────
+  // The shopper sometimes settles for a near miss (a book about an album, a sewing book called
+  // "Tunic" for the game). A small call checks each listing; a rejected one gets the idea's next
+  // candidate (checked too), and only then falls back to an Amazon search for the idea.
+  const tried = gifts.map((g) => new Set([g.product.url]));
+  let pending = gifts.map((_, i) => i).filter((i) => gifts[i].product.source !== "search-link");
+  if (pending.length) {
+    yield { type: "step", id: "check", agent: "shopper", label: "Double-checking each listing against its idea", status: "running" };
+    let swapped = 0;
+    try {
+      for (let round = 0; round < 2 && pending.length; round++) {
+        const reply = yield* llm("shopper", {
+          lane: STRATEGIST_LANE,
+          json: true,
+          temperature: 0,
+          maxTokens: 800,
+          messages: [
+            { role: "system", content: CHECK_PROMPT },
+            { role: "user", content: pending.map((i, k) => `${k + 1}. Idea: ${giftIdeas[i].idea.idea}\n   Listing: ${gifts[i].product.title}`).join("\n") },
+          ],
+        });
+        const ok = (parseArgs<{ checks?: { ok?: boolean }[] }>(reply.content ?? "")?.checks ?? []).map((c) => c?.ok);
+        const recheck: number[] = [];
+        pending.forEach((i, k) => {
+          if (ok[k] !== false) return;
+          const { idea, n } = giftIdeas[i];
+          const taken = new Set(gifts.map((g) => g.product.url));
+          const next = round === 0 ? candidates(results[n], occasion.budget).find((p) => !tried[i].has(p.url) && !taken.has(p.url)) : undefined;
+          // The shopper's words described the rejected listing, so use the strategist's.
+          gifts[i] = { ...gifts[i], product: next ?? searchLink(idea.query, market.domain), headline: idea.idea, reasoning: idea.why };
+          swapped++;
+          if (next) {
+            tried[i].add(next.url);
+            recheck.push(i);
+          }
+        });
+        pending = recheck;
+      }
+    } catch (err) {
+      console.warn("[agent] listing check skipped:", (err as Error).message);
+    }
+    yield {
+      type: "step",
+      id: "check",
+      agent: "shopper",
+      label: "Double-checked each listing against its idea",
+      detail: swapped ? `Swapped out ${swapped} listing${swapped > 1 ? "s" : ""} that didn't match` : "Every listing matches its idea",
+      status: "done",
+    };
+  }
+
   yield { type: "gifts", gifts };
   yield { type: "done" };
 }

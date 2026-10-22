@@ -1,3 +1,5 @@
+import { fetchRetry } from "./http";
+
 // Minimal client for Groq's OpenAI-compatible chat completions endpoint.
 // Two keys are supported (GROQ_API_KEY, GROQ_API_KEY_2): each agent prefers its
 // own "lane" so their per-key token budgets don't collide, and either lane fails
@@ -78,7 +80,7 @@ export async function chat(opts: ChatOptions): Promise<Reply> {
   for (const key of order) {
     // Groq occasionally rejects a malformed tool call (400 tool_use_failed) or blips with a 5xx.
     for (let attempt = 0; attempt < 3; attempt++) {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const res = await fetchRetry("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
         body: JSON.stringify(body),

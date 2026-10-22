@@ -1,4 +1,5 @@
 import { cached } from "./cache";
+import { fetchRetry } from "./http";
 import type { AgeRange, Gender, QlooEntity, TasteSeed } from "./types";
 
 const BASE = process.env.QLOO_BASE_URL ?? "https://hackathon.api.qloo.com";
@@ -9,7 +10,7 @@ async function qloo<T>(path: string, params: Record<string, string | number | un
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== "") qs.set(k, String(v));
   const url = `${BASE}${path}?${qs}`;
   return cached(`qloo:${url}`, DAY, async () => {
-    const res = await fetch(url, { headers: { "X-Api-Key": process.env.QLOO_API_KEY ?? "" } });
+    const res = await fetchRetry(url, { headers: { "X-Api-Key": process.env.QLOO_API_KEY ?? "" } });
     if (!res.ok) throw new Error(`Qloo ${path} ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return (await res.json()) as T;
   });
@@ -101,6 +102,35 @@ export interface InsightQuery {
   gender?: Gender;
   location?: string;
   take?: number;
+}
+
+interface CompareTag {
+  tag_id: string;
+  name: string;
+  subtype: string;
+  query?: { score?: number };
+}
+
+/**
+ * Where two people's tastes overlap: Qloo's compare scores the tags both sets of
+ * entities share. Region tags ("United States") say nothing about taste, so they're dropped.
+ */
+export async function compareTaste(a: string[], b: string[], take = 8): Promise<{ id: string; name: string; score: number }[]> {
+  if (!a.length || !b.length) return [];
+  const data = await qloo<{ results?: { tags?: CompareTag[] } }>("/v2/insights/compare", {
+    "a.signal.interests.entities": a.join(","),
+    "b.signal.interests.entities": b.join(","),
+    take: 30,
+  });
+  const seen = new Set<string>();
+  const out: { id: string; name: string; score: number }[] = [];
+  for (const t of data.results?.tags ?? []) {
+    const key = t.name.toLowerCase().replace(/[^a-z]/g, "");
+    if (t.subtype.includes("region") || !key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ id: t.tag_id, name: t.name, score: t.query?.score ?? 0 });
+  }
+  return out.slice(0, take);
 }
 
 /** Cross-domain recommendations from the taste graph. */

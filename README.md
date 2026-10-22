@@ -17,9 +17,23 @@ An LLM on its own guesses gifts from stereotypes ("she likes indie music → vin
 3. **Every idea is searched on Amazon in parallel** via SerpApi.
 4. **Agent 2, the personal shopper** (Groq key 2) sees the plan and the listings, may run `search_amazon` again for misses, and calls `submit_gifts` with one listing per idea plus the final reason.
 5. **Listings gendered for someone else are dropped** before the shopper sees them. With no gender given, only unisex or ungendered listings are kept, and the agents avoid sized clothing unless the notes give a size.
-6. **The server assembles the gifts.** Taste trails (`from → via`, with Qloo affinity) come from the plan and are checked against the Qloo data. If the shopper fails, each idea falls back to its best *matching* listing, or to an Amazon search link.
+6. **Every listing is checked against its idea** in one small Groq call (a book about an album isn't the album; a sewing book called "Tunic" isn't the game). A rejected listing is swapped for the idea's next candidate, which is checked too, before falling back to an Amazon search link.
+7. **The server assembles the gifts.** Taste trails (`from → via`, with Qloo affinity) come from the plan and are checked against the Qloo data. Each run reports how many gifts came through a Qloo connection to something the person never mentioned.
+
+### Gifts to share
+
+Add yourself as a persona ("This is me"), then pick **Gift for: Maya and you**. Wrapt calls Qloo's `/v2/insights/compare` with both people's loves to find the taste tags you have in common, seeds the graph sweep with both sets of loves plus those shared tags, and the strategist plans gifts you'd enjoy together. The results open with "Where your tastes meet".
 
 Progress streams to the UI as NDJSON and drives the agent log. When Groq rate-limits a key, the agents fail over to the other key, and pause visibly if both are limited. Qloo and SerpApi responses are cached (in memory, or in Upstash Redis if configured) to protect quotas.
+
+## Demo results
+
+`public/demo-runs/` holds one finished run per demo persona and store (amazon.com and amazon.in), so a first visit shows gifts instantly without spending Groq or SerpApi quota. They're labelled as sample runs. Regenerate them with the dev server running:
+
+```bash
+node scripts/bake-demo-runs.mjs http://localhost:3210            # all
+node scripts/bake-demo-runs.mjs http://localhost:3210 demo-alex:US  # just one
+```
 
 ## Run locally
 
@@ -62,6 +76,7 @@ Import the repo into Vercel and add the env vars above. The `/api/gifts` route s
 - Video games are `urn:entity:videogame` in **both** search and insights. The developer guide's `video_game` returns 400.
 - `signal.interests.entities` accepts comma-separated IDs; `signal.demographics.age` / `.gender` shift brand results noticeably.
 - `/search` takes `types=urn:entity:...` to filter by type.
+- `/v2/insights/compare` takes `a.signal.interests.entities` and `b.signal.interests.entities` and returns the shared tags with a score; region tags ("United States") come back too and say nothing about taste.
 
 ## Stack
 

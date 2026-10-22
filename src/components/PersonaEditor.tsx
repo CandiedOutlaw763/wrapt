@@ -28,22 +28,22 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
 
   const save = () => {
     if (!canSave) return;
-    const clean = { ...p, name: p.name.trim(), relationship: p.relationship.trim() || "Friend" };
+    const clean = { ...p, name: p.name.trim(), relationship: p.isSelf ? "You" : p.relationship.trim() || "Friend" };
     upsert(clean);
     go({ name: "persona", id: clean.id });
   };
 
   return (
     <div className="pb-16">
-      <header className="flex flex-col gap-6 px-4 pb-8 pt-10 sm:flex-row sm:items-end sm:px-6" style={{ background: `linear-gradient(to bottom, ${hue(p)[2]}, #121212)` }}>
+      <header className="flex flex-col gap-6 px-4 pb-8 pt-10 sm:flex-row sm:items-end sm:px-6" style={{ background: `linear-gradient(to bottom, ${hue(p)[2]}, transparent)` }}>
         <Cover persona={{ ...p, name: p.name || "?" }} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm text-sub">{isNew ? "Someone new" : `Editing ${initial.name}`}</p>
+          <p className="text-sm text-sub">{p.isSelf ? "Your own taste" : isNew ? "Someone new" : `Editing ${initial.name}`}</p>
           <input
             autoFocus={isNew}
             value={p.name}
             onChange={(e) => set("name", e.target.value)}
-            placeholder="Their name"
+            placeholder={p.isSelf ? "Your name" : "Their name"}
             aria-label="Name"
             className="font-display mt-1 w-full border-b-2 border-transparent bg-transparent text-5xl font-semibold tracking-tight outline-none transition-colors placeholder:text-text/30 focus:border-ribbon/70 focus-visible:outline-none sm:text-7xl"
           />
@@ -63,7 +63,14 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
       </header>
 
       <div className="flex max-w-3xl flex-col gap-8 px-4 sm:px-6">
-        <Field label="What do they love?" hint="Search Qloo for artists, shows, films, books, brands and games. Four or more works best.">
+        <Field
+          label={p.isSelf ? "What do you love?" : "What do they love?"}
+          hint={
+            p.isSelf
+              ? "Wrapt compares this with each person's taste to find gifts you can enjoy together."
+              : "Search Qloo for artists, shows, films, books, brands and games. Four or more works best."
+          }
+        >
           <EntitySearch selected={p.loves} onAdd={(s) => set("loves", [...p.loves, s])} />
           {p.loves.length > 0 && (
             <ul className="mt-3 flex flex-wrap gap-2">
@@ -81,13 +88,17 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
           )}
         </Field>
 
-        <Field label="Who are they to you?">
+        <Field label={p.isSelf ? "This is you" : "Who are they to you?"}>
           <div className="flex flex-wrap gap-2">
-            {RELATIONSHIPS.map((r) => (
-              <Pill key={r} active={p.relationship === r} onClick={() => set("relationship", r)}>
-                {r}
-              </Pill>
-            ))}
+            {!p.isSelf &&
+              RELATIONSHIPS.map((r) => (
+                <Pill key={r} active={p.relationship === r} onClick={() => set("relationship", r)}>
+                  {r}
+                </Pill>
+              ))}
+            <Pill active={!!p.isSelf} onClick={() => set("isSelf", !p.isSelf)}>
+              This is me
+            </Pill>
           </div>
         </Field>
 

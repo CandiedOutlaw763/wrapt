@@ -12,7 +12,7 @@ import { Home } from "./Home";
 import { PersonaEditor } from "./PersonaEditor";
 import { PersonaView } from "./PersonaView";
 
-type View = { name: "home" } | { name: "persona"; id: string } | { name: "edit"; id?: string };
+type View = { name: "home" } | { name: "persona"; id: string } | { name: "edit"; id?: string; self?: boolean };
 
 export interface NowPlaying {
   personaId: string;
@@ -22,6 +22,8 @@ export interface NowPlaying {
 
 interface AppState {
   personas: Persona[];
+  /** The giver's own taste, if they've added it. */
+  self?: Persona;
   store: Store;
   upsert: (p: Persona) => void;
   /** Asks for confirmation, then deletes the persona and its gift runs. */
@@ -38,23 +40,24 @@ interface AppState {
 const Ctx = createContext<AppState | null>(null);
 export const useApp = () => useContext(Ctx)!;
 
-// #/p/<id> → persona, #/edit/<id> → editor, #/new → new persona, anything else → home.
+// #/p/<id> → persona, #/edit/<id> → editor, #/new → new persona, #/me → add your own taste, else home.
 function viewFromHash(): View {
   const [, kind, id] = window.location.hash.split("/");
   if (kind === "p" && id) return { name: "persona", id };
   if (kind === "edit" && id) return { name: "edit", id };
   if (kind === "new") return { name: "edit" };
+  if (kind === "me") return { name: "edit", self: true };
   return { name: "home" };
 }
 
 function hashFor(v: View): string {
   if (v.name === "persona") return `#/p/${v.id}`;
-  if (v.name === "edit") return v.id ? `#/edit/${v.id}` : "#/new";
+  if (v.name === "edit") return v.id ? `#/edit/${v.id}` : v.self ? "#/me" : "#/new";
   return "";
 }
 
-export function blankPersona(count: number): Persona {
-  return { id: newId(), name: "", relationship: "Friend", loves: [], hue: count % 8, createdAt: Date.now() };
+export function blankPersona(count: number, self = false): Persona {
+  return { id: newId(), name: "", relationship: self ? "You" : "Friend", loves: [], hue: count % 8, createdAt: Date.now(), ...(self && { isSelf: true }) };
 }
 
 const MARKET_KEY = "wrapt:market";
@@ -158,10 +161,14 @@ export default function App() {
 
   const state: AppState = {
     personas,
+    self: personas.find((p) => p.isSelf),
     store,
     upsert: (p) => {
-      setPersonas(personas.some((x) => x.id === p.id) ? personas.map((x) => (x.id === p.id ? p : x)) : [...personas, p]);
-      store.savePersona(p).catch(saveFailed);
+      // Only one persona can be "me": claiming it releases any other.
+      const released = p.isSelf ? personas.filter((x) => x.isSelf && x.id !== p.id).map((x) => ({ ...x, isSelf: false })) : [];
+      const next = (personas.some((x) => x.id === p.id) ? personas.map((x) => (x.id === p.id ? p : x)) : [...personas, p]).map((x) => released.find((r) => r.id === x.id) ?? x);
+      setPersonas(next);
+      for (const x of [p, ...released]) store.savePersona(x).catch(saveFailed);
     },
     confirmRemove: setRemoving,
     go,
@@ -192,7 +199,7 @@ export default function App() {
               </div>
             )}
             {view.name === "home" && <Home />}
-            {view.name === "edit" && <PersonaEditor key={view.id ?? "new"} initial={editing ?? blankPersona(personas.length)} isNew={!editing} />}
+            {view.name === "edit" && <PersonaEditor key={view.id ?? (view.self ? "me" : "new")} initial={editing ?? blankPersona(personas.length, view.self)} isNew={!editing} />}
             {view.name === "persona" && current && <PersonaView key={current.id} persona={current} />}
             {view.name === "persona" && !current && <Home />}
           </main>
@@ -317,7 +324,7 @@ function Sidebar({ activeId }: { activeId?: string }) {
           </button>
         </header>
         <ul className="scroll-panel min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-          {personas.map((p) => (
+          {[...personas].sort((a, b) => Number(!!b.isSelf) - Number(!!a.isSelf)).map((p) => (
             <li key={p.id} className={`group flex items-center rounded-xl transition-colors hover:bg-hi ${activeId === p.id ? "bg-hi" : ""}`}>
               <button
                 onClick={() => go({ name: "persona", id: p.id })}

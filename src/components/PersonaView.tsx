@@ -22,6 +22,8 @@ interface RunState {
   gifts?: Gift[];
   error?: string;
   occasion: Occasion;
+  /** A pre-made run shipped with the demo personas, not one this visitor ran. */
+  sample?: boolean;
 }
 
 const AGENT_LABEL: Record<AgentName, { name: string; className: string }> = {
@@ -31,13 +33,14 @@ const AGENT_LABEL: Record<AgentName, { name: string; className: string }> = {
 };
 
 export function PersonaView({ persona }: { persona: Persona }) {
-  const { go, setNowPlaying, store, market, setMarket, confirmRemove } = useApp();
-  const [choice, setChoice] = useState<{ event: string; budget?: number }>({ event: "Birthday" });
+  const { go, setNowPlaying, store, market, setMarket, confirmRemove, self } = useApp();
+  const [choice, setChoice] = useState<{ event: string; budget?: number; shared?: boolean }>({ event: "Birthday" });
   // Budgets are per store currency, so a budget picked in another store falls back to this store's default.
   const occasion: Occasion = {
     event: choice.event,
     budget: choice.budget !== undefined && market.budgets.includes(choice.budget) ? choice.budget : defaultBudget(market),
     market: market.code,
+    shared: !!(choice.shared && self && !persona.isSelf),
   };
   const [run, setRun] = useState<RunState | null>(null);
   const [history, setHistory] = useState<GiftRun[]>([]);
@@ -53,15 +56,25 @@ export function PersonaView({ persona }: { persona: Persona }) {
         setHistory(past);
         if (past[0]) {
           setRun((current) => current ?? { running: false, steps: [], profile: past[0].profile, gifts: past[0].gifts, occasion: past[0].occasion });
-          setChoice({ event: past[0].occasion.event, budget: past[0].occasion.budget });
+          setChoice({ event: past[0].occasion.event, budget: past[0].occasion.budget, shared: past[0].occasion.shared });
+          return;
         }
+        // Demo personas ship with a finished run per store, so the first look is instant.
+        if (!persona.id.startsWith("demo-")) return;
+        return fetch(`/demo-runs/${persona.id}-${market.code}.json`)
+          .then((r) => (r.ok ? (r.json() as Promise<GiftRun>) : null))
+          .then((sample) => {
+            if (!live || !sample) return;
+            setRun((current) => current ?? { running: false, steps: [], profile: sample.profile, gifts: sample.gifts, occasion: sample.occasion, sample: true });
+            setChoice({ event: sample.occasion.event, budget: sample.occasion.budget });
+          });
       })
       .catch((err) => console.error("[runs]", err));
     return () => {
       live = false;
       abort.current?.abort();
     };
-  }, [persona.id, store]);
+  }, [persona.id, store, market.code]);
 
   async function start() {
     abort.current?.abort();
@@ -79,7 +92,7 @@ export function PersonaView({ persona }: { persona: Persona }) {
       const res = await fetch("/api/gifts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ persona, occasion }),
+        body: JSON.stringify({ persona, occasion, giver: occasion.shared ? self : undefined }),
         signal: ctrl.signal,
       });
       if (!res.ok || !res.body) {
@@ -147,6 +160,20 @@ export function PersonaView({ persona }: { persona: Persona }) {
       <div className="px-5 sm:px-8">
         <div className="flex flex-col gap-4 rounded-2xl bg-card p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex min-w-0 flex-col gap-3">
+            {!persona.isSelf && (
+              <div className="flex items-center gap-3">
+                <span className="w-16 shrink-0 text-sm text-sub">Gift for</span>
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Pill active={!occasion.shared} onClick={() => setChoice({ ...choice, shared: false })}>
+                    Just {persona.name}
+                  </Pill>
+                  <Pill active={occasion.shared} onClick={() => (self ? setChoice({ ...choice, shared: true }) : go({ name: "edit", self: true }))}>
+                    {self ? `${persona.name} and you` : "Something to share"}
+                  </Pill>
+                  {!self && <span className="text-xs text-sub">Add your own taste to find gifts you can enjoy together</span>}
+                </div>
+              </div>
+            )}
             <div className="flex items-center gap-3">
               <span className="w-16 shrink-0 text-sm text-sub">Occasion</span>
               <div className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
@@ -221,7 +248,9 @@ export function PersonaView({ persona }: { persona: Persona }) {
           <section className="mt-10">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h2 className="font-display text-3xl font-semibold">Gifts for {persona.name}</h2>
+                <h2 className="font-display text-3xl font-semibold">{run.profile?.shared ? `Gifts for ${persona.name} and you` : `Gifts for ${persona.name}`}</h2>
+                <Discovery gifts={run.gifts} persona={persona} />
+                {run.sample && <p className="mb-1 text-sm font-semibold text-lilac">A sample run, ready for you to explore. Press Find gifts for a fresh one.</p>}
                 <p className="mt-1 text-sm text-sub">
                   {run.occasion.event}, up to {formatMoney(run.occasion.budget, marketFor(run.occasion.market))} on {marketFor(run.occasion.market).domain}
                   {history.length > 1 && <HistoryPicker history={history} onPick={(h) => setRun({ running: false, steps: [], profile: h.profile, gifts: h.gifts, occasion: h.occasion })} />}
@@ -233,7 +262,25 @@ export function PersonaView({ persona }: { persona: Persona }) {
                 </button>
               )}
             </div>
-            <GiftList gifts={run.gifts} name={persona.name} />
+            {run.profile?.shared && (
+              <div className="mb-5 rounded-2xl border border-lilac/30 bg-lilac/10 p-4">
+                <p className="font-semibold">Where your tastes meet</p>
+                <p className="mt-1 text-sm text-text/80">
+                  Qloo compared what you love with what {persona.name} loves.
+                  {run.profile.shared.tags.length ? " You both lean toward:" : " There's no strong overlap, so these bridge both tastes."}
+                </p>
+                {run.profile.shared.tags.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {run.profile.shared.tags.map((t) => (
+                      <span key={t} className="rounded-full bg-lilac/20 px-3 py-1 text-sm">
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <GiftList gifts={run.gifts} name={run.profile?.shared ? "you both" : persona.name} />
             <Compare persona={persona} occasion={run.occasion} />
           </section>
         )}
@@ -244,6 +291,18 @@ export function PersonaView({ persona }: { persona: Persona }) {
 
       {showStory && run?.profile && run.gifts && <TasteStory persona={persona} profile={run.profile} gifts={run.gifts} occasion={run.occasion} onClose={() => setShowStory(false)} />}
     </div>
+  );
+}
+
+/** How many picks Qloo surfaced through something the person never listed: the case for the taste graph in one line. */
+function Discovery({ gifts, persona }: { gifts: Gift[]; persona: Persona }) {
+  const loved = new Set(persona.loves.map((l) => l.name.toLowerCase()));
+  const found = gifts.filter((g) => g.trail.some((t) => t.via && t.affinity !== undefined && !loved.has(t.via.toLowerCase()))).length;
+  if (!found) return null;
+  return (
+    <p className="mb-1 text-sm font-semibold text-ribbon">
+      {found} of {gifts.length} found through Qloo, by way of things {persona.name} never mentioned
+    </p>
   );
 }
 

@@ -45,6 +45,8 @@ export interface Persona {
   notes?: string;
   /** Index into the cover palette. */
   hue: number;
+  /** The giver's own taste, used for gifts the two of them can share. At most one persona has this. */
+  isSelf?: boolean;
   createdAt: number;
 }
 
@@ -54,6 +56,8 @@ export interface Occasion {
   budget: number;
   /** Amazon store country code (see markets.ts); missing on runs saved before stores existed = US. */
   market?: string;
+  /** Gifts the giver and recipient can enjoy together, found through their taste overlap. */
+  shared?: boolean;
   note?: string;
 }
 
@@ -76,6 +80,8 @@ export interface TasteProfile {
   /** Most common descriptive tags across the seeds — the persona's "vibe". */
   dna: { name: string; count: number }[];
   domains: Partial<Record<string, QlooEntity[]>>;
+  /** Present on shared runs: whose taste was compared, and the tags Qloo found they have in common. */
+  shared?: { giver: string; tags: string[] };
 }
 
 export interface Product {
