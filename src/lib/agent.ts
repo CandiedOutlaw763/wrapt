@@ -1,94 +1,30 @@
-import { chat, type Message, type ToolDef } from "./groq";
+import { chat, RateLimited, type ChatOptions, type Message, type Reply, type ToolDef } from "./groq";
 import { insights, searchTags } from "./qloo";
-import { searchProducts } from "./products";
-import type { AgentEvent, Gift, Occasion, Persona, Product, QlooEntity, TasteLink, TasteProfile } from "./types";
+import { searchLink, searchProducts } from "./products";
+import type { AgentEvent, AgentName, Gift, Occasion, Persona, Product, QlooEntity, TasteLink, TasteProfile } from "./types";
+
+// Two agents share the work, each on its own Groq key (lane):
+//   1. Taste strategist — reads the Qloo profile, explores, plans gift ideas.
+//   2. Personal shopper — searches Amazon per idea, picks listings, writes the final why.
 
 const GIFT_COUNT = 6;
-const MAX_TURNS = 10;
+const STRATEGIST_TURNS = 4;
+const SHOPPER_TURNS = 4;
+const STRATEGIST_LANE = 0;
+const SHOPPER_LANE = 1;
 
-/** Domains swept up front; each becomes a shelf in the UI and context for the model. */
+/** Domains swept up front; each becomes a shelf in the UI and context for the strategist. */
 const DOMAINS: { type: string; key: string; label: string; take: number }[] = [
-  { type: "urn:entity:brand", key: "brand", label: "brands", take: 15 },
-  { type: "urn:entity:book", key: "book", label: "books", take: 8 },
-  { type: "urn:entity:artist", key: "artist", label: "artists", take: 6 },
-  { type: "urn:entity:movie", key: "movie", label: "films", take: 6 },
-  { type: "urn:entity:tv_show", key: "tv_show", label: "shows", take: 5 },
-  { type: "urn:entity:videogame", key: "videogame", label: "games", take: 5 },
-  { type: "urn:entity:podcast", key: "podcast", label: "podcasts", take: 4 },
+  { type: "urn:entity:brand", key: "brand", label: "brands", take: 12 },
+  { type: "urn:entity:book", key: "book", label: "books", take: 6 },
+  { type: "urn:entity:artist", key: "artist", label: "artists", take: 5 },
+  { type: "urn:entity:movie", key: "movie", label: "films", take: 5 },
+  { type: "urn:entity:tv_show", key: "tv_show", label: "shows", take: 4 },
+  { type: "urn:entity:videogame", key: "videogame", label: "games", take: 4 },
+  { type: "urn:entity:podcast", key: "podcast", label: "podcasts", take: 3 },
 ];
 
 const EXPLORABLE = ["brand", "book", "artist", "movie", "tv_show", "videogame", "podcast", "place", "destination"];
-
-const TOOLS: ToolDef[] = [
-  {
-    type: "function",
-    function: {
-      name: "explore_taste",
-      description:
-        "Query Qloo's taste graph for more entities in one domain, seeded by a subset of what the persona loves and/or a hobby keyword. Use it to deepen a gift angle (e.g. brands for fans of one specific artist, or brands linked to a hobby).",
-      parameters: {
-        type: "object",
-        properties: {
-          domain: { type: "string", enum: EXPLORABLE },
-          seeds: { type: "array", items: { type: "string" }, description: "Names of loved things to seed from, exactly as listed under LOVES. Empty = all." },
-          keyword: { type: "string", description: "Optional interest keyword mapped to a Qloo tag, e.g. 'hiking'." },
-        },
-        required: ["domain"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "search_amazon",
-      description: "Search Amazon for real listings. Batch up to 4 specific queries (brand + product type) per call.",
-      parameters: {
-        type: "object",
-        properties: {
-          queries: { type: "array", items: { type: "string" }, maxItems: 4 },
-        },
-        required: ["queries"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "submit_gifts",
-      description: `Submit the final ${GIFT_COUNT} gifts. Each must reference a product ref returned by search_amazon.`,
-      parameters: {
-        type: "object",
-        properties: {
-          gifts: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                product_ref: { type: "string", description: "e.g. p3" },
-                headline: { type: "string", description: "Max 8 words." },
-                reasoning: { type: "string", description: "1-2 warm, specific sentences tying the gift to their taste." },
-                trail: {
-                  type: "array",
-                  description: "How the taste graph led here.",
-                  items: {
-                    type: "object",
-                    properties: {
-                      from: { type: "string", description: "A loved thing or hobby, as written in the profile." },
-                      via: { type: "string", description: "The Qloo entity that bridged to this gift, as written in the profile or explore results." },
-                    },
-                    required: ["from"],
-                  },
-                },
-              },
-              required: ["product_ref", "headline", "reasoning", "trail"],
-            },
-          },
-        },
-        required: ["gifts"],
-      },
-    },
-  },
-];
 
 const AGE_LABEL: Record<string, string> = {
   "24_and_younger": "24 or younger",
@@ -99,58 +35,195 @@ const AGE_LABEL: Record<string, string> = {
   "55_and_older": "55+",
 };
 
-function systemPrompt(): string {
-  return `You are Wrapt, a gift concierge whose picks are grounded in Qloo's taste graph — real cross-domain affinity data about what people with a given taste love — not generic guesses.
-
-You get a persona, an occasion and a Qloo taste profile: what they love, plus the brands, books, artists, films, shows, games and podcasts that people with that taste over-index on (affinity 0–1, higher = stronger).
-
-Goal: ${GIFT_COUNT} gifts available on Amazon.
-
-Process:
-1. Study the profile and pick ${GIFT_COUNT} distinct gift angles that come from Qloo signals: a high-affinity brand's signature product, a book Qloo surfaced, a record or merch from a related artist, gear for a hobby in a brand that matches their aesthetic. Call explore_taste when an angle needs more signal.
-2. Call search_amazon with specific queries ("Polaroid Now+ instant camera", not "camera"). Batch queries.
-3. Choose the best real listing per angle: within budget, well reviewed, genuinely giftable. Search again if results miss.
-4. Call submit_gifts.
-
-Rules:
-- Every gift traces to the taste graph: "from" = a loved thing or hobby, "via" = the Qloo entity that bridged to it, both spelled as they appear in the data.
-- Spread across categories; at most 2 gifts from one domain. No generic filler (gift cards, plain mugs, novelty socks) unless tied to a signal.
-- Price must be at or under the budget. Fit the occasion and the relationship.
-- Reasoning speaks to the gift giver about the recipient by name, in plain language, without numbers or jargon.`;
+interface Idea {
+  idea: string;
+  query: string;
+  why: string;
+  from: string;
+  via?: string;
 }
+
+// ── Tool definitions ─────────────────────────────────────────────────────────
+
+const EXPLORE_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "explore_taste",
+    description:
+      "Query Qloo's taste graph for more entities in one domain, seeded by some of the things the persona loves and/or an interest keyword. Use it when an idea needs more signal (e.g. brands for fans of one artist, or brands tied to a hobby).",
+    parameters: {
+      type: "object",
+      properties: {
+        domain: { type: "string", enum: EXPLORABLE },
+        seeds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Names from LOVES to seed from. Empty = all.",
+        },
+        keyword: {
+          type: "string",
+          description: "Optional interest keyword, e.g. 'hiking'.",
+        },
+      },
+      required: ["domain"],
+    },
+  },
+};
+
+const PLAN_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "submit_plan",
+    description: `Hand ${GIFT_COUNT} gift ideas to the personal shopper.`,
+    parameters: {
+      type: "object",
+      properties: {
+        ideas: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              idea: { type: "string", description: "The gift in a few words." },
+              query: {
+                type: "string",
+                description: "Specific Amazon search, brand + product type, max 6 words.",
+              },
+              why: {
+                type: "string",
+                description: "1–2 sentences to the giver on what in the recipient's taste points here.",
+              },
+              from: {
+                type: "string",
+                description: "The loved thing or hobby this comes from, spelled as in the profile.",
+              },
+              via: {
+                type: "string",
+                description: "The Qloo entity that bridged to the gift, spelled as in the profile. Omit if the gift is directly about the loved thing.",
+              },
+            },
+            required: ["idea", "query", "why", "from"],
+          },
+        },
+      },
+      required: ["ideas"],
+    },
+  },
+};
+
+const SEARCH_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "search_amazon",
+    description: "Search Amazon again for ideas whose listings missed. Up to 3 specific queries.",
+    parameters: {
+      type: "object",
+      properties: {
+        queries: { type: "array", items: { type: "string" }, maxItems: 3 },
+      },
+      required: ["queries"],
+    },
+  },
+};
+
+const GIFTS_TOOL: ToolDef = {
+  type: "function",
+  function: {
+    name: "submit_gifts",
+    description: "Submit one listing per idea.",
+    parameters: {
+      type: "object",
+      properties: {
+        picks: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              idea: {
+                type: "integer",
+                description: "Idea number from the plan (1-based).",
+              },
+              product_ref: {
+                type: "string",
+                description: "Listing ref, e.g. p3.",
+              },
+              headline: {
+                type: "string",
+                description: "Max 8 words naming the chosen listing's actual product and brand, not the original idea.",
+              },
+              reasoning: {
+                type: "string",
+                description: "2 sentences to the giver: why this suits the recipient's taste, and what makes this particular listing a good pick.",
+              },
+            },
+            required: ["idea", "product_ref", "headline", "reasoning"],
+          },
+        },
+      },
+      required: ["picks"],
+    },
+  },
+};
+
+// ── Prompts ──────────────────────────────────────────────────────────────────
+
+const STRATEGIST_PROMPT = `You are the taste strategist on Wrapt, a two-agent gift team. You read a Qloo taste profile — what someone loves, plus the brands, books, artists, films, shows, games and podcasts that people with that taste over-index on (affinity 0–1) — and plan ${GIFT_COUNT} gift ideas for a personal shopper to buy on Amazon.
+
+The point of Wrapt is discovery: gifts they don't already own, found through what people with their taste love. So:
+- At least 4 ideas must come from the QLOO TASTE GRAPH lists: a product from a listed brand, a listed book, a record by a listed artist, etc. Set "via" to that entity, spelled exactly as listed.
+- "from" is always one item from LOVES or HOBBIES (the one the idea connects to most), never the via entity.
+- At most one idea may be merchandise of something they already love (their favourite artist's album, the book of their favourite show). They likely own it already.
+- Spread ideas across domains, at most 2 per domain.
+- Only propose products that really exist on Amazon: a book, a record, a brand's own product line, gear for a hobby. Skip brands that don't sell giftable products there (car makers, airlines, restaurants, stores) and never invent branded merch such as a podcast mug or a car brand's cooler.
+- Fit the budget, occasion and relationship. No gift cards or generic filler.
+- "query" must find a real product: brand + product type ("Polaroid Now+ instant camera"), not vague phrases.
+- "why" talks to the giver about the recipient by name, in plain language, without numbers or the word Qloo.
+
+Call explore_taste at most twice, only if an idea needs more signal. Then call submit_plan.`;
+
+function shopperPrompt(name: string, budget: number) {
+  return `You are the personal shopper on Wrapt, a two-agent gift team. The taste strategist planned gift ideas for ${name}, and Amazon has been searched for each. For every idea, pick the best listing:
+- matches the idea and brand, at or under $${budget};
+- if the idea names a specific book, album or film, the listing must be that exact work, not a similarly titled one;
+- if the idea names a brand, prefer a listing from that brand;
+- new rather than renewed or used when possible, decent rating, a real gift rather than an accessory or part;
+- if nothing fits an idea, call search_amazon with a better query (at most once).
+
+Then call submit_gifts with one pick per idea. "reasoning" is 2 sentences to the giver: why this suits ${name}'s taste (build on the strategist's why), then one concrete detail of this listing (format, edition, material, what's included). Don't mention price, budget, ratings or that it's new. No jargon.`;
+}
+
+// Brands Qloo matches on taste but that don't sell giftable things on Amazon (Land Rover, Instagram, airlines).
+const NOT_GIFTABLE = /^(automotive|social networking service|airlines?|aviation|hospitality|restaurants?|food service|banking|insurance|telecommunications)$/i;
+const giftable = (e: QlooEntity) => !e.industries?.length || (!NOT_GIFTABLE.test(e.industries[0]) && !e.industries.some((i) => /social networking/i.test(i)));
 
 function fmtEntities(list: QlooEntity[] | undefined, withKeywords: boolean): string {
   if (!list?.length) return "(none)";
-  return list
-    .map((e) => `${e.name} ${e.affinity.toFixed(2)}${withKeywords && e.keywords?.length ? ` [${e.keywords.slice(0, 4).join(", ")}]` : ""}`)
-    .join("; ");
+  return list.map((e) => `${e.name} ${e.affinity.toFixed(2)}${withKeywords && e.keywords?.length ? ` [${e.keywords.slice(0, 3).join(", ")}]` : ""}`).join("; ");
 }
 
-function personaBrief(p: Persona, o: Occasion, profile: TasteProfile): string {
-  const facts = [
+function personaFacts(p: Persona): string[] {
+  return [
     `Name: ${p.name}`,
     `Relationship to giver: ${p.relationship}`,
     p.age && `Age: ${AGE_LABEL[p.age]}`,
     p.gender && p.gender !== "unspecified" && `Gender: ${p.gender}`,
     p.location && `Lives in: ${p.location}`,
     p.notes && `Giver's notes: ${p.notes}`,
-  ].filter(Boolean);
+  ].filter(Boolean) as string[];
+}
 
-  const loves = profile.seeds.map((s) => `${s.name} (${s.type.replace("urn:entity:", "")}${s.tags?.length ? `; ${s.tags.slice(0, 5).join(", ")}` : ""})`);
+function strategistBrief(p: Persona, o: Occasion, profile: TasteProfile): string {
+  const loves = profile.seeds.map((s) => `${s.name} (${s.type.replace("urn:entity:", "")}${s.tags?.length ? `; ${s.tags.slice(0, 4).join(", ")}` : ""})`);
   const lines = [
-    "PERSONA",
-    ...facts,
-    "",
-    `OCCASION: ${o.event}. Budget: up to $${o.budget}.${o.note ? ` Note: ${o.note}` : ""}`,
-    "",
+    ...personaFacts(p),
+    `OCCASION: ${o.event}. Budget: up to $${o.budget}.${o.note ? ` ${o.note}` : ""}`,
     `LOVES: ${loves.join("; ") || "(none)"}`,
-    `HOBBIES: ${p.hobbies || "(none)"}${profile.hobbyTags.length ? ` → Qloo tags: ${profile.hobbyTags.map((t) => t.name).join(", ")}` : ""}`,
+    `HOBBIES: ${p.hobbies || "(none)"}`,
     `VIBE: ${profile.dna.map((d) => d.name).join(", ") || "(unknown)"}`,
-    "",
-    "QLOO TASTE GRAPH (name affinity [keywords])",
+    "QLOO TASTE GRAPH (name affinity [keywords]):",
   ];
   for (const d of [...DOMAINS, { key: "place", label: "local places" }]) {
-    if (profile.domains[d.key]?.length) lines.push(`${d.label.toUpperCase()}: ${fmtEntities(profile.domains[d.key], d.key === "brand")}`);
+    const list = d.key === "brand" ? profile.domains.brand?.filter(giftable) : profile.domains[d.key];
+    if (list?.length) lines.push(`${d.label.toUpperCase()}: ${fmtEntities(list, d.key === "brand")}`);
   }
   return lines.join("\n");
 }
@@ -180,7 +253,7 @@ function parseArgs<T>(raw: string): T | null {
   }
 }
 
-/** Look up a name across everything the agent has seen, for trail images and affinities. */
+/** Look up a name across everything the agents have seen, for trail images and affinities. */
 function findEntity(name: string | undefined, pools: QlooEntity[][]): QlooEntity | undefined {
   if (!name) return undefined;
   const n = name.toLowerCase().trim();
@@ -194,13 +267,100 @@ function findEntity(name: string | undefined, pools: QlooEntity[][]): QlooEntity
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let waitSeq = 0;
+
+/** Call Groq, surfacing rate-limit waits as visible steps instead of failing the run. */
+async function* llm(agent: AgentName, opts: ChatOptions): AsyncGenerator<AgentEvent, Reply> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await chat(opts);
+    } catch (err) {
+      if (!(err instanceof RateLimited) || attempt >= 5) throw err;
+      const seconds = Math.min(Math.max(err.retryAfter, 2), 30);
+      const id = `wait-${waitSeq++}`;
+      const label = "Pausing for Groq's rate limit";
+      yield {
+        type: "step",
+        id,
+        agent,
+        label,
+        detail: `Resuming in ${seconds}s`,
+        status: "running",
+      };
+      await sleep(seconds * 1000);
+      yield {
+        type: "step",
+        id,
+        agent,
+        label,
+        detail: "Resumed",
+        status: "done",
+      };
+    }
+  }
+}
+
+// Words that match almost any listing, so they don't count as evidence of relevance.
+const GENERIC = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "of",
+  "book",
+  "books",
+  "paperback",
+  "hardcover",
+  "edition",
+  "vinyl",
+  "record",
+  "set",
+  "pack",
+  "gift",
+  "new",
+  "classic",
+  "women's",
+  "men's",
+  "womens",
+  "mens",
+]);
+const keyWords = (s: string) =>
+  s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // "Kånken" and "Kanken" should match
+    .toLowerCase()
+    .split(/[^a-z0-9']+/)
+    .filter((w) => w.length > 1 && !GENERIC.has(w));
+
+/**
+ * Without the shopper's judgement, only trust a listing that clearly matches the search:
+ * most of the query's distinctive words must appear in its title.
+ */
+function matches(product: Product, idea: Idea): boolean {
+  const want = new Set(keyWords(idea.query));
+  const have = new Set(keyWords(product.title));
+  const overlap = [...want].filter((w) => have.has(w)).length;
+  return want.size > 0 && overlap / want.size >= 0.75;
+}
+
+/** Without the shopper's judgement: the first in-budget listing that matches the idea, else an Amazon search. */
+function pickFallback(results: Product[], idea: Idea, budget: number): Product {
+  return results.find((p) => p.source !== "search-link" && (p.price === undefined || p.price <= budget) && matches(p, idea)) ?? searchLink(idea.query);
+}
+
 export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGenerator<AgentEvent> {
   // ── 1. Read the persona's taste ────────────────────────────────────────────
-  yield { type: "step", id: "read", label: `Reading ${persona.name}'s taste`, detail: persona.loves.map((l) => l.name).join(", "), status: "running" };
+  yield {
+    type: "step",
+    id: "read",
+    agent: "qloo",
+    label: `Reading ${persona.name}'s taste`,
+    detail: persona.loves.map((l) => l.name).join(", "),
+    status: "running",
+  };
 
-  const hobbyTags = (
-    await Promise.all(hobbyPhrases(persona.hobbies).map((h) => searchTags(h, 1).catch(() => [])))
-  ).flat();
+  const hobbyTags = (await Promise.all(hobbyPhrases(persona.hobbies).map((h) => searchTags(h, 1).catch(() => [])))).flat();
   const seeds = persona.loves.slice(0, 12);
   const entityIds = seeds.map((s) => s.id);
   const tagIds = hobbyTags.map((t) => t.id);
@@ -208,17 +368,31 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
   yield {
     type: "step",
     id: "read",
+    agent: "qloo",
     label: `Reading ${persona.name}'s taste`,
-    detail: hobbyTags.length ? `Mapped hobbies to Qloo tags: ${hobbyTags.map((t) => t.name).join(", ")}` : `${seeds.length} loves`,
+    detail: hobbyTags.length ? `Hobbies matched to Qloo tags: ${hobbyTags.map((t) => t.name).join(", ")}` : `${seeds.length} loves`,
     status: "done",
   };
 
   // ── 2. Sweep the taste graph across domains ───────────────────────────────
-  yield { type: "step", id: "graph", label: "Walking the Qloo taste graph", detail: "brands, books, music, film, TV, games, podcasts", status: "running" };
+  yield {
+    type: "step",
+    id: "graph",
+    agent: "qloo",
+    label: "Mapping their taste across Qloo's graph",
+    detail: "Brands, books, music, film, TV, games and podcasts",
+    status: "running",
+  };
 
   const demo = { age: persona.age, gender: persona.gender };
   const sweeps = DOMAINS.map((d) =>
-    insights({ filterType: d.type, entityIds, tagIds: d.key === "brand" ? tagIds : undefined, ...demo, take: d.take })
+    insights({
+      filterType: d.type,
+      entityIds,
+      tagIds: d.key === "brand" ? tagIds : undefined,
+      ...demo,
+      take: d.take,
+    })
       .then((list) => [d.key, list.filter((e) => !entityIds.includes(e.id))] as const)
       .catch((err) => {
         console.warn(`[agent] insights ${d.key} failed:`, (err as Error).message);
@@ -227,7 +401,12 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
   );
   if (persona.location) {
     sweeps.push(
-      insights({ filterType: "urn:entity:place", entityIds, location: persona.location, take: 6 })
+      insights({
+        filterType: "urn:entity:place",
+        entityIds,
+        location: persona.location,
+        take: 4,
+      })
         .then((list) => ["place", list] as const)
         .catch(() => ["place", []] as const),
     );
@@ -237,123 +416,383 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
 
   const total = Object.values(domains).reduce((n, l) => n + (l?.length ?? 0), 0);
   if (!total) {
-    yield { type: "step", id: "graph", label: "Walking the Qloo taste graph", detail: "Qloo returned no signal", status: "error" };
-    yield { type: "error", message: "Qloo didn't return any taste signal for this persona. Try adding a few more loves." };
+    yield {
+      type: "step",
+      id: "graph",
+      agent: "qloo",
+      label: "Mapping their taste across Qloo's graph",
+      detail: "Qloo returned no matches",
+      status: "error",
+    };
+    yield {
+      type: "error",
+      message: "Qloo found no taste matches for this persona. Add a few more things they love, then try again.",
+    };
     return;
   }
   const topBrands = (domains.brand ?? []).slice(0, 3).map((b) => `${b.name} ${Math.round(b.affinity * 100)}%`);
-  yield { type: "step", id: "graph", label: "Walking the Qloo taste graph", detail: `${total} affinities · top brands: ${topBrands.join(", ")}`, status: "done" };
+  yield {
+    type: "step",
+    id: "graph",
+    agent: "qloo",
+    label: "Mapping their taste across Qloo's graph",
+    detail: `${total} matches. Top brands: ${topBrands.join(", ")}`,
+    status: "done",
+  };
   yield { type: "profile", profile };
 
-  // ── 3. Agent loop: explore, search, choose ────────────────────────────────
-  const products = new Map<string, Product>();
   const explored: QlooEntity[][] = [];
-  const messages: Message[] = [
-    { role: "system", content: systemPrompt() },
-    { role: "user", content: personaBrief(persona, occasion, profile) },
-  ];
-
+  const pools = () => [...(Object.values(domains).filter(Boolean) as QlooEntity[][]), ...explored];
   let step = 0;
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
-    const finalTurn = turn === MAX_TURNS - 1;
-    let reply;
-    try {
-      reply = await chat({
-        messages,
-        tools: finalTurn ? TOOLS.filter((t) => t.function.name === "submit_gifts") : TOOLS,
+
+  // ── 3. Agent 1: taste strategist plans the ideas ──────────────────────────
+  yield {
+    type: "step",
+    id: "plan",
+    agent: "strategist",
+    label: "Planning gift ideas from the taste graph",
+    status: "running",
+  };
+
+  const strategist: Message[] = [
+    { role: "system", content: STRATEGIST_PROMPT },
+    { role: "user", content: strategistBrief(persona, occasion, profile) },
+  ];
+  let ideas: Idea[] = [];
+  let explores = 0;
+
+  try {
+    for (let turn = 0; turn < STRATEGIST_TURNS && !ideas.length; turn++) {
+      // Tools stay constant (Groq rejects calls to tools missing from the request); limits are enforced below.
+      const reply = yield* llm("strategist", {
+        lane: STRATEGIST_LANE,
+        maxTokens: 1500,
+        messages: strategist,
+        tools: [EXPLORE_TOOL, PLAN_TOOL],
         toolChoice: "required",
       });
-    } catch (err) {
-      yield { type: "error", message: `The agent hit an error: ${(err as Error).message}` };
-      return;
-    }
+      strategist.push({
+        role: "assistant",
+        content: reply.content ?? "",
+        tool_calls: reply.toolCalls,
+      });
 
-    if (reply.content?.trim()) yield { type: "thought", text: reply.content.trim() };
-    messages.push({ role: "assistant", content: reply.content ?? "", tool_calls: reply.toolCalls });
-
-    for (const call of reply.toolCalls) {
-      const id = `tool-${step++}`;
-      const name = call.function.name;
-
-      if (name === "explore_taste") {
-        const args = parseArgs<{ domain: string; seeds?: string[]; keyword?: string }>(call.function.arguments);
-        const domain = EXPLORABLE.includes(args?.domain ?? "") ? args!.domain : "brand";
-        const picked = seeds.filter((s) => args?.seeds?.some((n) => n.toLowerCase() === s.name.toLowerCase()));
-        const focus = picked.length ? picked : seeds;
-        const label = `Exploring ${domain.replace("_", " ")}s${args?.keyword ? ` for “${args.keyword}”` : ""} via ${focus.map((s) => s.name).slice(0, 3).join(", ")}`;
-        yield { type: "step", id, label, status: "running" };
-
-        let result = "No results.";
-        try {
-          const keywordTags = args?.keyword ? await searchTags(args.keyword, 1) : [];
-          const list = await insights({
-            filterType: `urn:entity:${domain}`,
-            entityIds: focus.map((s) => s.id),
-            tagIds: keywordTags.map((t) => t.id),
-            location: domain === "place" ? persona.location : undefined,
-            ...demo,
-            take: 10,
+      for (const call of reply.toolCalls) {
+        if (call.function.name === "explore_taste" && (explores >= 2 || turn >= STRATEGIST_TURNS - 2)) {
+          strategist.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: "Exploration limit reached. Call submit_plan now with what you have.",
           });
-          explored.push(list);
-          if (list.length) result = fmtEntities(list, true);
-          yield { type: "step", id, label, detail: list.slice(0, 4).map((e) => e.name).join(", ") || "nothing new", status: "done" };
-        } catch (err) {
-          result = `Error: ${(err as Error).message}`;
-          yield { type: "step", id, label, detail: "Qloo lookup failed", status: "error" };
-        }
-        messages.push({ role: "tool", tool_call_id: call.id, content: result });
-      } else if (name === "search_amazon") {
-        const args = parseArgs<{ queries: string[] }>(call.function.arguments);
-        const queries = (args?.queries ?? []).slice(0, 4);
-        const label = `Searching Amazon: ${queries.map((q) => `“${q}”`).join(", ")}`;
-        yield { type: "step", id, label, status: "running" };
+        } else if (call.function.name === "explore_taste") {
+          explores++;
+          const args = parseArgs<{
+            domain: string;
+            seeds?: string[];
+            keyword?: string;
+          }>(call.function.arguments);
+          const domain = EXPLORABLE.includes(args?.domain ?? "") ? args!.domain : "brand";
+          const picked = seeds.filter((s) => args?.seeds?.some((n) => n.toLowerCase() === s.name.toLowerCase()));
+          const focus = picked.length ? picked : seeds;
+          const id = `explore-${step++}`;
+          const label = `Exploring ${domain.replace("_", " ")}s${args?.keyword ? ` for “${args.keyword}”` : ""} via ${focus
+            .map((s) => s.name)
+            .slice(0, 3)
+            .join(", ")}`;
+          yield {
+            type: "step",
+            id,
+            agent: "strategist",
+            label,
+            status: "running",
+          };
 
-        const results = await Promise.all(queries.map((q) => searchProducts(q, occasion.budget)));
-        const blocks = queries.map((q, i) => {
-          const lines = results[i].map((p) => {
-            const ref = `p${products.size + 1}`;
-            products.set(ref, p);
-            if (p.source === "search-link") return `${ref}: (no listing data — link to Amazon search for "${q}")`;
-            return `${ref}: ${p.title.slice(0, 110)} | ${p.priceDisplay ?? "price n/a"} | ${p.rating ?? "?"}★ (${p.reviews ?? 0})`;
+          let result = "No results.";
+          try {
+            const keywordTags = args?.keyword ? await searchTags(args.keyword, 1) : [];
+            const list = await insights({
+              filterType: `urn:entity:${domain}`,
+              entityIds: focus.map((s) => s.id),
+              tagIds: keywordTags.map((t) => t.id),
+              location: domain === "place" ? persona.location : undefined,
+              ...demo,
+              take: 8,
+            });
+            explored.push(list);
+            if (list.length) result = fmtEntities(list, true);
+            yield {
+              type: "step",
+              id,
+              agent: "strategist",
+              label,
+              detail:
+                list
+                  .slice(0, 4)
+                  .map((e) => e.name)
+                  .join(", ") || "Nothing new",
+              status: "done",
+            };
+          } catch (err) {
+            result = `Error: ${(err as Error).message}`;
+            yield {
+              type: "step",
+              id,
+              agent: "strategist",
+              label,
+              detail: "Qloo lookup failed",
+              status: "error",
+            };
+          }
+          strategist.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: result,
           });
-          return `Query "${q}":\n${lines.join("\n")}`;
-        });
-        const found = results.flat().filter((p) => p.source !== "search-link").length;
-        yield { type: "step", id, label, detail: `${found} listings`, status: "done" };
-        messages.push({ role: "tool", tool_call_id: call.id, content: blocks.join("\n\n") });
-      } else if (name === "submit_gifts") {
-        const args = parseArgs<{ gifts: { product_ref: string; headline: string; reasoning: string; trail?: { from: string; via?: string }[] }[] }>(
-          call.function.arguments,
-        );
-        const pools = [...Object.values(domains).filter(Boolean) as QlooEntity[][], ...explored];
-        const seedPool: QlooEntity[] = seeds.map((s) => ({ id: s.id, name: s.name, type: s.type, affinity: 1, image: s.image }));
-        const seen = new Set<string>();
-        const gifts: Gift[] = [];
-        for (const g of args?.gifts ?? []) {
-          const product = products.get(g.product_ref?.trim());
-          if (!product || seen.has(g.product_ref)) continue;
-          seen.add(g.product_ref);
-          const trail: TasteLink[] = (g.trail ?? []).map((t) => {
-            const via = findEntity(t.via, pools);
-            const from = findEntity(t.from, [seedPool]);
-            return { from: from?.name ?? t.from, via: via?.name ?? t.via, affinity: via?.affinity, image: via?.image ?? from?.image };
+        } else if (call.function.name === "submit_plan") {
+          const args = parseArgs<{ ideas: Idea[] }>(call.function.arguments);
+          ideas = (args?.ideas ?? []).filter((i) => i.query?.trim() && i.why?.trim()).slice(0, GIFT_COUNT);
+          if (!ideas.length)
+            strategist.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: "The plan was empty or missing queries. Submit it again.",
+            });
+        } else {
+          strategist.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: `Unknown tool ${call.function.name}.`,
           });
-          gifts.push({ product, headline: g.headline, reasoning: g.reasoning, trail });
         }
-
-        if (!gifts.length) {
-          messages.push({ role: "tool", tool_call_id: call.id, content: "None of those product_refs exist. Use refs like p1, p2 from search_amazon results and submit again." });
-          continue;
-        }
-        yield { type: "step", id, label: `Wrapped ${gifts.length} gifts for ${persona.name}`, status: "done" };
-        yield { type: "gifts", gifts };
-        yield { type: "done" };
-        return;
-      } else {
-        messages.push({ role: "tool", tool_call_id: call.id, content: `Unknown tool ${name}.` });
       }
     }
+  } catch (err) {
+    yield {
+      type: "step",
+      id: "plan",
+      agent: "strategist",
+      label: "Planning gift ideas from the taste graph",
+      detail: "Stopped",
+      status: "error",
+    };
+    yield {
+      type: "error",
+      message: `The taste strategist stopped: ${(err as Error).message}`,
+    };
+    return;
   }
 
-  yield { type: "error", message: "The agent ran out of steps before choosing gifts. Try again." };
+  if (!ideas.length) {
+    yield {
+      type: "step",
+      id: "plan",
+      agent: "strategist",
+      label: "Planning gift ideas from the taste graph",
+      detail: "No plan",
+      status: "error",
+    };
+    yield {
+      type: "error",
+      message: "The taste strategist didn't produce a plan. Run it again.",
+    };
+    return;
+  }
+  yield {
+    type: "step",
+    id: "plan",
+    agent: "strategist",
+    label: `Planned ${ideas.length} gift ideas`,
+    detail: ideas.map((i) => i.idea).join(", "),
+    status: "done",
+  };
+
+  // ── 4. Search Amazon for every idea in parallel ───────────────────────────
+  yield {
+    type: "step",
+    id: "search",
+    agent: "shopper",
+    label: "Searching Amazon for each idea",
+    detail: ideas.map((i) => `“${i.query}”`).join(", "),
+    status: "running",
+  };
+  const results = await Promise.all(ideas.map((i) => searchProducts(i.query, occasion.budget)));
+  const listings = results.flat().filter((p) => p.source !== "search-link").length;
+  yield {
+    type: "step",
+    id: "search",
+    agent: "shopper",
+    label: "Searching Amazon for each idea",
+    detail: `${listings} listings found`,
+    status: "done",
+  };
+
+  const products = new Map<string, Product>();
+  const register = (p: Product) => {
+    const ref = `p${products.size + 1}`;
+    products.set(ref, p);
+    return ref;
+  };
+  const listingLines = (list: Product[]) =>
+    list
+      .slice(0, 3)
+      .map((p) => {
+        const ref = register(p);
+        return p.source === "search-link"
+          ? `${ref}: (no listings; link to an Amazon search)`
+          : `${ref}: ${p.title.slice(0, 70)} | ${p.priceDisplay ?? "price n/a"} | ${p.rating ?? "?"}★ (${p.reviews ?? 0})`;
+      })
+      .join("\n");
+
+  const planText = ideas
+    .map((idea, n) => `Idea ${n + 1}: ${idea.idea}\nWhy: ${idea.why}\nListings for “${idea.query}”:\n${listingLines(results[n])}`)
+    .join("\n\n");
+
+  // ── 5. Agent 2: personal shopper picks listings and writes the final why ──
+  yield {
+    type: "step",
+    id: "pick",
+    agent: "shopper",
+    label: `Choosing the best listing for each idea`,
+    status: "running",
+  };
+
+  const shopper: Message[] = [
+    { role: "system", content: shopperPrompt(persona.name, occasion.budget) },
+    {
+      role: "user",
+      content: `${personaFacts(persona).join("\n")}\nOccasion: ${occasion.event}\n\n${planText}`,
+    },
+  ];
+  type Pick = {
+    idea: number;
+    product_ref: string;
+    headline: string;
+    reasoning: string;
+  };
+  let picks: Pick[] = [];
+  let searched = false;
+
+  try {
+    for (let turn = 0; turn < SHOPPER_TURNS && !picks.length; turn++) {
+      const reply = yield* llm("shopper", {
+        lane: SHOPPER_LANE,
+        maxTokens: 1200,
+        messages: shopper,
+        tools: [SEARCH_TOOL, GIFTS_TOOL],
+        toolChoice: "required",
+      });
+      shopper.push({
+        role: "assistant",
+        content: reply.content ?? "",
+        tool_calls: reply.toolCalls,
+      });
+
+      for (const call of reply.toolCalls) {
+        if (call.function.name === "search_amazon" && searched) {
+          shopper.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: "Search limit reached. Call submit_gifts now; pick the closest listing for each idea.",
+          });
+        } else if (call.function.name === "search_amazon") {
+          searched = true;
+          const queries = (parseArgs<{ queries: string[] }>(call.function.arguments)?.queries ?? []).slice(0, 3);
+          const id = `research-${step++}`;
+          const label = `Searching again: ${queries.map((q) => `“${q}”`).join(", ")}`;
+          yield {
+            type: "step",
+            id,
+            agent: "shopper",
+            label,
+            status: "running",
+          };
+          const more = await Promise.all(queries.map((q) => searchProducts(q, occasion.budget)));
+          yield {
+            type: "step",
+            id,
+            agent: "shopper",
+            label,
+            detail: `${more.flat().filter((p) => p.source !== "search-link").length} listings`,
+            status: "done",
+          };
+          shopper.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: queries.map((q, i) => `Listings for “${q}”:\n${listingLines(more[i])}`).join("\n\n"),
+          });
+        } else if (call.function.name === "submit_gifts") {
+          const found = (parseArgs<{ picks: Pick[] }>(call.function.arguments)?.picks ?? []).filter((p) => products.has(p.product_ref?.trim()));
+          if (found.length) picks = found;
+          else
+            shopper.push({
+              role: "tool",
+              tool_call_id: call.id,
+              content: "None of those product_refs exist. Use refs like p1, p2 from the listings and submit again.",
+            });
+        } else {
+          shopper.push({
+            role: "tool",
+            tool_call_id: call.id,
+            content: `Unknown tool ${call.function.name}.`,
+          });
+        }
+      }
+    }
+  } catch (err) {
+    // The plan and listings are already in hand, so fall back to them below rather than failing the run.
+    console.warn("[agent] shopper failed, using plan fallback:", (err as Error).message);
+  }
+
+  // ── 6. Assemble gifts: shopper picks first, plan + top listing for any gaps ─
+  const seedPool: QlooEntity[] = seeds.map((s) => ({
+    id: s.id,
+    name: s.name,
+    type: s.type,
+    affinity: 1,
+    image: s.image,
+  }));
+  const hobbies = hobbyPhrases(persona.hobbies);
+  const trailFor = (idea: Idea): TasteLink[] => {
+    const via = findEntity(idea.via, pools());
+    const seed = findEntity(idea.from, [seedPool]);
+    const hobby = hobbies.find((h) => h.toLowerCase() === idea.from?.toLowerCase().trim());
+    // Only keep "from" when it really is one of their loves or hobbies.
+    const from = seed?.name ?? hobby;
+    if (!via) return [{ from: from ?? idea.from, image: seed?.image }];
+    return [
+      {
+        from: from && from !== via.name ? from : undefined,
+        via: via.name,
+        affinity: via.affinity,
+        image: via.image ?? seed?.image,
+      },
+    ];
+  };
+
+  const gifts: Gift[] = [];
+  const usedProducts = new Set<string>();
+  ideas.forEach((idea, n) => {
+    const pick = picks.find((p) => Number(p.idea) === n + 1 && !usedProducts.has(p.product_ref.trim()));
+    const product = pick ? products.get(pick.product_ref.trim())! : pickFallback(results[n], idea, occasion.budget);
+    if (!product || usedProducts.has(product.url)) return;
+    usedProducts.add(pick?.product_ref.trim() ?? product.url);
+    usedProducts.add(product.url);
+    gifts.push({
+      product,
+      headline: pick?.headline?.trim() || idea.idea,
+      reasoning: pick?.reasoning?.trim() || idea.why,
+      trail: trailFor(idea),
+    });
+  });
+
+  yield {
+    type: "step",
+    id: "pick",
+    agent: "shopper",
+    label: `Chose ${gifts.length} gifts for ${persona.name}`,
+    detail: picks.length ? undefined : "Used the strategist's picks directly",
+    status: "done",
+  };
+  yield { type: "gifts", gifts };
+  yield { type: "done" };
 }

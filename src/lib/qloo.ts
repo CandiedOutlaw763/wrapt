@@ -36,6 +36,7 @@ interface RawEntity {
     description?: string;
     keywords?: string[];
     lifestyle?: string[];
+    industries?: string[];
   };
 }
 
@@ -122,5 +123,6 @@ export async function insights(q: InsightQuery): Promise<QlooEntity[]> {
     image: e.properties?.image?.url ?? null,
     keywords: (e.properties?.keywords ?? tasteTags(e.tags)).slice(0, 6),
     description: (e.properties?.short_description ?? e.properties?.description)?.slice(0, 160),
+    industries: e.properties?.industries ?? undefined,
   }));
 }

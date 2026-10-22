@@ -1,13 +1,15 @@
 import { runAgent } from "@/lib/agent";
+import { hasGroqKey } from "@/lib/groq";
 import type { AgentEvent, Occasion, Persona } from "@/lib/types";
 
-export const maxDuration = 60;
+// Rate-limit pauses can stretch a run past a minute.
+export const maxDuration = 120;
 
 /** Streams the agent's progress as newline-delimited JSON events. */
 export async function POST(req: Request) {
   const { persona, occasion } = (await req.json()) as { persona: Persona; occasion: Occasion };
   if (!persona?.loves?.length) return Response.json({ error: "Add at least one thing this person loves." }, { status: 400 });
-  if (!process.env.GROQ_API_KEY) return Response.json({ error: "GROQ_API_KEY is not set on the server." }, { status: 500 });
+  if (!hasGroqKey()) return Response.json({ error: "GROQ_API_KEY is not set on the server." }, { status: 500 });
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({

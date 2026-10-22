@@ -38,24 +38,24 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
       <header className="flex flex-col gap-6 px-4 pb-8 pt-10 sm:flex-row sm:items-end sm:px-6" style={{ background: `linear-gradient(to bottom, ${hue(p)[2]}, #121212)` }}>
         <Cover persona={{ ...p, name: p.name || "?" }} size="lg" />
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">{isNew ? "New persona" : "Edit persona"}</p>
+          <p className="text-sm text-sub">{isNew ? "Someone new" : `Editing ${initial.name}`}</p>
           <input
             autoFocus={isNew}
             value={p.name}
             onChange={(e) => set("name", e.target.value)}
             placeholder="Their name"
             aria-label="Name"
-            className="mt-1 w-full bg-transparent text-5xl font-black tracking-tighter outline-none placeholder:text-white/30 sm:text-7xl"
+            className="font-display mt-1 w-full border-b-2 border-transparent bg-transparent text-5xl font-semibold tracking-tight outline-none transition-colors placeholder:text-text/30 focus:border-ribbon/70 focus-visible:outline-none sm:text-7xl"
           />
           <div className="mt-4 flex flex-wrap gap-2" role="radiogroup" aria-label="Cover color">
-            {HUES.map(([from, to], i) => (
+            {HUES.map(([paper, ribbon], i) => (
               <button
-                key={from}
+                key={paper}
                 onClick={() => set("hue", i)}
                 aria-label={`Color ${i + 1}`}
                 aria-pressed={p.hue === i}
-                className={`size-6 rounded-full ring-offset-2 ring-offset-transparent transition ${p.hue === i ? "ring-2 ring-white" : ""}`}
-                style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
+                className={`size-6 rounded-full ring-offset-2 ring-offset-transparent transition ${p.hue === i ? "ring-2 ring-text" : ""}`}
+                style={{ background: `linear-gradient(135deg, ${paper} 62%, ${ribbon} 62%)` }}
               />
             ))}
           </div>
@@ -68,11 +68,11 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
           {p.loves.length > 0 && (
             <ul className="mt-3 flex flex-wrap gap-2">
               {p.loves.map((l) => (
-                <li key={l.id} className="rise flex items-center gap-2 rounded-full bg-hi py-1 pl-1 pr-2">
+                <li key={l.id} className="flex items-center gap-2 rounded-full bg-hi py-1 pl-1 pr-2">
                   <SeedThumb seed={l} className="size-7" />
                   <span className="text-sm font-medium">{l.name}</span>
                   <span className="text-xs text-sub">{typeLabel(l.type)}</span>
-                  <button onClick={() => set("loves", p.loves.filter((x) => x.id !== l.id))} aria-label={`Remove ${l.name}`} className="text-sub hover:text-white">
+                  <button onClick={() => set("loves", p.loves.filter((x) => x.id !== l.id))} aria-label={`Remove ${l.name}`} className="text-sub hover:text-text">
                     <X className="size-4" />
                   </button>
                 </li>
@@ -101,7 +101,7 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
               ))}
             </div>
           </Field>
-          <Field label="Gender" hint="Optional — nudges Qloo's demographic signal.">
+          <Field label="Gender" hint="Optional. Sharpens Qloo's demographic signal.">
             <div className="flex flex-wrap gap-2">
               {(["female", "male", "unspecified"] as const).map((g) => (
                 <Pill key={g} active={p.gender === g} onClick={() => set("gender", g)}>
@@ -116,7 +116,7 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
           <Field label="Hobbies" hint="Comma separated, e.g. film photography, bouldering">
             <TextInput value={p.hobbies ?? ""} onChange={(v) => set("hobbies", v)} placeholder="film photography, journaling" />
           </Field>
-          <Field label="City" hint="Optional — finds their kind of local places.">
+          <Field label="City" hint="Optional. Adds places near them to their taste map.">
             <TextInput value={p.location ?? ""} onChange={(v) => set("location", v)} placeholder="Brooklyn" />
           </Field>
         </div>
@@ -126,7 +126,7 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
             value={p.notes ?? ""}
             onChange={(e) => set("notes", e.target.value)}
             rows={3}
-            className="w-full resize-none rounded-md bg-hi px-3 py-2.5 text-sm outline-none ring-white/40 placeholder:text-dim focus:ring-2"
+            className="w-full resize-none rounded-md bg-hi px-3 py-2.5 text-sm outline-none ring-ribbon/60 placeholder:text-dim focus:ring-2"
           />
         </Field>
 
@@ -134,14 +134,14 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
           <button
             onClick={save}
             disabled={!canSave}
-            className="rounded-full bg-green px-8 py-3 font-bold text-black transition hover:scale-[1.03] hover:bg-[#3be477] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100"
+            className="rounded-full bg-ribbon px-8 py-3 font-semibold text-ink transition-colors hover:bg-ribbon-deep disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {isNew ? "Create persona" : "Save"}
+            {isNew ? "Save person" : "Save changes"}
           </button>
-          <button onClick={() => go(isNew ? { name: "home" } : { name: "persona", id: p.id })} className="rounded-full px-6 py-3 font-bold text-sub hover:text-white">
+          <button onClick={() => go(isNew ? { name: "home" } : { name: "persona", id: p.id })} className="rounded-full px-6 py-3 font-semibold text-sub hover:text-text">
             Cancel
           </button>
-          {!canSave && <span className="text-sm text-dim">Add a name and at least one love.</span>}
+          {!canSave && <span className="text-sm text-sub">Add a name and at least one thing they love to save.</span>}
           {!isNew && (
             <button
               onClick={() => {
@@ -150,7 +150,7 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
                   go({ name: "home" });
                 }
               }}
-              className="ml-auto flex items-center gap-2 rounded-full px-4 py-3 text-sm font-bold text-sub hover:text-white"
+              className="ml-auto flex items-center gap-2 rounded-full px-4 py-3 text-sm font-semibold text-sub hover:text-text"
             >
               <Trash2 className="size-4" /> Delete
             </button>
@@ -164,7 +164,7 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
 function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
   return (
     <div>
-      <h3 className="font-bold">{label}</h3>
+      <h3 className="font-display text-lg font-semibold">{label}</h3>
       {hint && <p className="mb-3 mt-0.5 text-sm text-sub">{hint}</p>}
       {!hint && <div className="h-3" />}
       {children}
@@ -178,7 +178,7 @@ function TextInput({ value, onChange, placeholder }: { value: string; onChange: 
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className="w-full rounded-md bg-hi px-3 py-2.5 text-sm outline-none ring-white/40 placeholder:text-dim focus:ring-2"
+      className="w-full rounded-md bg-hi px-3 py-2.5 text-sm outline-none ring-ribbon/60 placeholder:text-dim focus:ring-2"
     />
   );
 }
@@ -215,8 +215,8 @@ function EntitySearch({ selected, onAdd }: { selected: TasteSeed[]; onAdd: (s: T
   const visible = q.trim().length >= 2 ? results.filter((r) => !selected.some((s) => s.id === r.id)) : [];
 
   return (
-    <div className="rounded-lg bg-elev p-2">
-      <label className="flex items-center gap-2 rounded-md bg-hi px-3 ring-white/40 focus-within:ring-2">
+    <div className="rounded-lg bg-card p-2">
+      <label className="flex items-center gap-2 rounded-md bg-hi px-3 ring-ribbon/60 focus-within:ring-2">
         <Search className="size-5 text-sub" />
         <input
           value={q}

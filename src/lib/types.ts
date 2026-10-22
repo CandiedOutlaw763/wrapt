@@ -63,6 +63,8 @@ export interface QlooEntity {
   image?: string | null;
   keywords?: string[];
   description?: string;
+  /** Brands only, e.g. ["Automotive", "Luxury Goods"]. */
+  industries?: string[];
 }
 
 export interface TasteProfile {
@@ -82,12 +84,12 @@ export interface Product {
   priceDisplay?: string;
   rating?: number;
   reviews?: number;
-  source: "serpapi" | "canopy" | "search-link";
+  source: "serpapi" | "search-link";
 }
 
 export interface TasteLink {
-  /** What the persona loves (a seed or hobby). */
-  from: string;
+  /** What the persona loves (a seed or hobby), when the agent named one correctly. */
+  from?: string;
   /** The Qloo entity that bridged to the gift, if any. */
   via?: string;
   affinity?: number;
@@ -113,8 +115,11 @@ export interface GiftRun {
   createdAt: number;
 }
 
+/** Who did the work: the Qloo sweep, or one of the two agents. */
+export type AgentName = "qloo" | "strategist" | "shopper";
+
 export type AgentEvent =
-  | { type: "step"; id: string; label: string; detail?: string; status: "running" | "done" | "error" }
+  | { type: "step"; id: string; agent: AgentName; label: string; detail?: string; status: "running" | "done" | "error" }
   | { type: "profile"; profile: TasteProfile }
   | { type: "thought"; text: string }
   | { type: "gifts"; gifts: Gift[] }

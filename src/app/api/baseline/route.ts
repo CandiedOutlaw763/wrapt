@@ -10,6 +10,7 @@ export async function POST(req: Request) {
   try {
     const { content } = await chat({
       json: true,
+      lane: 1,
       temperature: 0.7,
       messages: [
         { role: "system", content: 'Suggest gifts. Reply as JSON: {"ideas":[{"title":"...","reason":"..."}]} with exactly 6 ideas.' },

@@ -3,35 +3,40 @@
 /* eslint-disable @next/next/no-img-element -- remote Qloo/Amazon images */
 
 import { useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, ExternalLink, LoaderCircle, Pencil, Play, Scale, Sparkles, Star } from "lucide-react";
+import { Check, CircleAlert, ExternalLink, Gift as GiftIcon, LoaderCircle, Pencil, RotateCcw, Scale, Sparkles, Star } from "lucide-react";
 import { loadRuns, saveRun } from "@/lib/store";
-import type { AgentEvent, BaselineIdea, Gift, GiftRun, Occasion, Persona, QlooEntity, TasteProfile } from "@/lib/types";
+import type { AgentEvent, AgentName, BaselineIdea, Gift, GiftRun, Occasion, Persona, QlooEntity, TasteProfile } from "@/lib/types";
 import { useApp } from "./App";
-import { Cover, Equalizer, Pill, SeedThumb, ageLabel, hue, typeLabel } from "./ui";
-import { Wrapped } from "./Wrapped";
+import { Cover, Pill, SeedThumb, ageLabel, hue, typeLabel } from "./ui";
+import { TasteStory } from "./TasteStory";
 
 const EVENTS = ["Birthday", "Anniversary", "Holidays", "Graduation", "Housewarming", "Thank you", "Just because"];
 const BUDGETS = [25, 50, 100, 200, 500];
-const EXPECTED_STEPS = 7;
+const EXPECTED_STEPS = 6;
 
 type Step = Extract<AgentEvent, { type: "step" }>;
 
 interface RunState {
   running: boolean;
   steps: Step[];
-  thoughts: string[];
   profile?: TasteProfile;
   gifts?: Gift[];
   error?: string;
   occasion: Occasion;
 }
 
+const AGENT_LABEL: Record<AgentName, { name: string; className: string }> = {
+  qloo: { name: "Qloo", className: "text-sub" },
+  strategist: { name: "Strategist", className: "text-lilac" },
+  shopper: { name: "Shopper", className: "text-ribbon" },
+};
+
 export function PersonaView({ persona }: { persona: Persona }) {
   const { go, setNowPlaying } = useApp();
   const [occasion, setOccasion] = useState<Occasion>({ event: "Birthday", budget: 100 });
   const [run, setRun] = useState<RunState | null>(null);
   const [history, setHistory] = useState<GiftRun[]>([]);
-  const [showWrapped, setShowWrapped] = useState(false);
+  const [showStory, setShowStory] = useState(false);
   const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -40,7 +45,7 @@ export function PersonaView({ persona }: { persona: Persona }) {
     /* eslint-disable react-hooks/set-state-in-effect */
     setHistory(past);
     if (past[0]) {
-      setRun({ running: false, steps: [], thoughts: [], profile: past[0].profile, gifts: past[0].gifts, occasion: past[0].occasion });
+      setRun({ running: false, steps: [], profile: past[0].profile, gifts: past[0].gifts, occasion: past[0].occasion });
       setOccasion(past[0].occasion);
     }
     /* eslint-enable react-hooks/set-state-in-effect */
@@ -51,13 +56,13 @@ export function PersonaView({ persona }: { persona: Persona }) {
     abort.current?.abort();
     const ctrl = new AbortController();
     abort.current = ctrl;
-    const state: RunState = { running: true, steps: [], thoughts: [], occasion };
+    const state: RunState = { running: true, steps: [], occasion };
     const update = (patch: Partial<RunState>) => {
       Object.assign(state, patch);
       setRun({ ...state });
     };
     update({});
-    setNowPlaying({ personaId: persona.id, label: "Warming up…", progress: 0.03 });
+    setNowPlaying({ personaId: persona.id, label: "Starting…", progress: 0.03 });
 
     try {
       const res = await fetch("/api/gifts", {
@@ -86,10 +91,9 @@ export function PersonaView({ persona }: { persona: Persona }) {
           if (e.type === "step") {
             const steps = state.steps.some((s) => s.id === e.id) ? state.steps.map((s) => (s.id === e.id ? e : s)) : [...state.steps, e];
             update({ steps });
-            const done = steps.filter((s) => s.status !== "running").length;
+            const done = steps.filter((s) => s.status !== "running" && !s.id.startsWith("wait")).length;
             setNowPlaying({ personaId: persona.id, label: e.label, progress: Math.min(0.95, 0.05 + done / EXPECTED_STEPS) });
-          } else if (e.type === "thought") update({ thoughts: [...state.thoughts, e.text] });
-          else if (e.type === "profile") update({ profile: e.profile });
+          } else if (e.type === "profile") update({ profile: e.profile });
           else if (e.type === "gifts") {
             update({ gifts: e.gifts });
             const saved: GiftRun = { occasion, profile: state.profile!, gifts: e.gifts, createdAt: Date.now() };
@@ -98,6 +102,7 @@ export function PersonaView({ persona }: { persona: Persona }) {
           } else if (e.type === "error") update({ error: e.message });
         }
       }
+      if (!state.gifts && !state.error) update({ error: "The connection closed before gifts arrived." });
     } catch (err) {
       if ((err as Error).name !== "AbortError") update({ error: (err as Error).message });
     } finally {
@@ -108,102 +113,108 @@ export function PersonaView({ persona }: { persona: Persona }) {
     }
   }
 
-  const [, , header] = hue(persona);
-  const meta = [persona.relationship, ageLabel(persona.age), persona.location, `${persona.loves.length} loves`].filter(Boolean).join(" • ");
+  const header = hue(persona)[2];
+  const facts = [ageLabel(persona.age), persona.location, `${persona.loves.length} loves`].filter(Boolean);
+  const hasGifts = !!run?.gifts?.length;
 
   return (
-    <div className="pb-16">
-      <header className="flex flex-col gap-6 px-4 pb-6 pt-10 sm:flex-row sm:items-end sm:px-6" style={{ background: `linear-gradient(to bottom, ${header}, ${header}99 60%, #121212)` }}>
+    <div className="pb-28">
+      <header className="flex flex-col gap-6 px-5 pb-8 pt-10 sm:flex-row sm:items-end sm:px-8" style={{ background: `linear-gradient(to bottom, ${header}, ${header}66 65%, transparent)` }}>
         <Cover persona={persona} size="lg" />
         <div className="min-w-0">
-          <p className="text-sm font-medium">Persona</p>
-          <h1 className="mt-1 break-words text-5xl font-black leading-none tracking-tighter sm:text-7xl lg:text-8xl">{persona.name}</h1>
-          {persona.notes && <p className="mt-4 line-clamp-2 text-sm text-white/70">{persona.notes}</p>}
-          <p className="mt-3 text-sm font-medium">{meta}</p>
+          <span className="inline-block rounded-full bg-text/10 px-3 py-1 text-sm font-semibold">{persona.relationship}</span>
+          <h1 className="font-display mt-3 break-words text-6xl font-semibold leading-[0.95] tracking-tight sm:text-8xl">{persona.name}</h1>
+          {persona.notes && <p className="mt-4 max-w-xl text-text/80">{persona.notes}</p>}
+          <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-sub">
+            {facts.map((f) => (
+              <span key={f}>{f}</span>
+            ))}
+          </p>
         </div>
       </header>
 
-      <div className="bg-gradient-to-b from-black/20 to-transparent px-4 sm:px-6">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-4 py-5">
-          <div className="flex items-center gap-4">
+      <div className="px-5 sm:px-8">
+        <div className="flex flex-col gap-4 rounded-2xl bg-card p-4 sm:p-5 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <span className="w-16 shrink-0 text-sm text-sub">Occasion</span>
+              <div className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
+                {EVENTS.map((e) => (
+                  <Pill key={e} active={occasion.event === e} onClick={() => setOccasion({ ...occasion, event: e })}>
+                    {e}
+                  </Pill>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="w-16 shrink-0 text-sm text-sub">Budget</span>
+              <div className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
+                {BUDGETS.map((b) => (
+                  <Pill key={b} active={occasion.budget === b} onClick={() => setOccasion({ ...occasion, budget: b })}>
+                    Up to ${b}
+                  </Pill>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => go({ name: "edit", id: persona.id })} className="grid size-11 place-items-center rounded-full text-sub hover:bg-hi hover:text-text" aria-label={`Edit ${persona.name}`}>
+              <Pencil className="size-5" />
+            </button>
             <button
               onClick={start}
               disabled={run?.running}
-              aria-label="Find gifts"
-              className="grid size-14 shrink-0 place-items-center rounded-full bg-green text-black shadow-lg transition hover:scale-105 hover:bg-[#3be477] disabled:hover:scale-100"
+              className="flex flex-1 items-center justify-center gap-2 rounded-full bg-ribbon px-6 py-3 font-semibold text-ink transition-colors hover:bg-ribbon-deep disabled:opacity-70 lg:flex-none"
             >
-              {run?.running ? <LoaderCircle className="size-6 animate-spin" /> : <Play className="ml-1 size-6 fill-current" />}
+              {run?.running ? <LoaderCircle className="size-5 animate-spin" /> : <GiftIcon className="size-5" />}
+              {run?.running ? "Finding gifts…" : hasGifts ? "Find new gifts" : "Find gifts"}
             </button>
-            <button onClick={() => go({ name: "edit", id: persona.id })} className="grid size-10 place-items-center rounded-full text-sub hover:text-white" aria-label="Edit persona">
-              <Pencil className="size-5" />
-            </button>
-          </div>
-          <div className="flex min-w-0 max-w-full flex-col gap-2">
-            <div className="no-scrollbar flex gap-2 overflow-x-auto">
-              {EVENTS.map((e) => (
-                <Pill key={e} active={occasion.event === e} onClick={() => setOccasion({ ...occasion, event: e })}>
-                  {e}
-                </Pill>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="mr-1 text-sm text-sub">Up to</span>
-              {BUDGETS.map((b) => (
-                <Pill key={b} active={occasion.budget === b} onClick={() => setOccasion({ ...occasion, budget: b })}>
-                  ${b}
-                </Pill>
-              ))}
-            </div>
           </div>
         </div>
 
-        {!run && (
-          <>
-            <p className="text-sm text-sub">Pick the occasion and budget, then press play. Wrapt reads {persona.name}&apos;s taste through Qloo and shops for them.</p>
-            <Loves persona={persona} />
-          </>
-        )}
+        {!run && <Loves persona={persona} />}
 
         {run && (run.running || run.steps.length > 0) && <AgentLog run={run} />}
 
-        {run?.error && (
-          <div className="mb-6 flex items-start gap-3 rounded-lg bg-[#3a1515] p-4 text-sm">
-            <CircleAlert className="mt-0.5 size-5 shrink-0 text-[#ff8a8a]" />
-            <div>
-              <p className="font-bold">That run didn&apos;t finish</p>
-              <p className="mt-1 text-white/80">{run.error}</p>
+        {run?.error && !run.running && (
+          <div className="mt-6 flex flex-col gap-3 rounded-2xl border border-alert/40 bg-alert/10 p-5 sm:flex-row sm:items-start">
+            <CircleAlert className="size-5 shrink-0 text-alert" />
+            <div className="flex-1">
+              <p className="font-semibold">{hasGifts ? "The latest run stopped early" : "The run stopped before any gifts were chosen"}</p>
+              <p className="mt-1 text-sm text-text/80">{run.error}</p>
             </div>
+            <button onClick={start} className="flex items-center gap-2 self-start rounded-full border border-text/30 px-4 py-2 text-sm font-semibold hover:border-text">
+              <RotateCcw className="size-4" /> Try again
+            </button>
           </div>
         )}
 
-        {run?.gifts && run.gifts.length > 0 && (
-          <>
-            <div className="mb-3 mt-2 flex flex-wrap items-end justify-between gap-3">
+        {hasGifts && run?.gifts && (
+          <section className="mt-10">
+            <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h2 className="text-2xl font-bold tracking-tight">Gifts for {persona.name}</h2>
-                <p className="text-sm text-sub">
-                  {run.occasion.event} · under ${run.occasion.budget}
-                  {history.length > 1 && <HistoryPicker history={history} onPick={(h) => setRun({ running: false, steps: [], thoughts: [], profile: h.profile, gifts: h.gifts, occasion: h.occasion })} />}
+                <h2 className="font-display text-3xl font-semibold">Gifts for {persona.name}</h2>
+                <p className="mt-1 text-sm text-sub">
+                  {run.occasion.event}, up to ${run.occasion.budget}
+                  {history.length > 1 && <HistoryPicker history={history} onPick={(h) => setRun({ running: false, steps: [], profile: h.profile, gifts: h.gifts, occasion: h.occasion })} />}
                 </p>
               </div>
-              <div className="flex gap-2">
-                {run.profile && (
-                  <button onClick={() => setShowWrapped(true)} className="flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-black transition hover:scale-[1.03]">
-                    <Sparkles className="size-4" /> Play Gift Wrapped
-                  </button>
-                )}
-              </div>
+              {run.profile && (
+                <button onClick={() => setShowStory(true)} className="flex items-center gap-2 rounded-full border border-line px-4 py-2 text-sm font-semibold hover:border-sub">
+                  <Sparkles className="size-4 text-ribbon" /> Play their taste story
+                </button>
+              )}
             </div>
-            <GiftList gifts={run.gifts} />
+            <GiftList gifts={run.gifts} name={persona.name} />
             <Compare persona={persona} occasion={run.occasion} />
-          </>
+          </section>
         )}
 
-        {run?.profile && <TasteShelves profile={run.profile} />}
+        {run?.profile && <TasteShelves profile={run.profile} name={persona.name} />}
         {run && <Loves persona={persona} />}
       </div>
 
-      {showWrapped && run?.profile && run.gifts && <Wrapped persona={persona} profile={run.profile} gifts={run.gifts} occasion={run.occasion} onClose={() => setShowWrapped(false)} />}
+      {showStory && run?.profile && run.gifts && <TasteStory persona={persona} profile={run.profile} gifts={run.gifts} occasion={run.occasion} onClose={() => setShowStory(false)} />}
     </div>
   );
 }
@@ -211,14 +222,14 @@ export function PersonaView({ persona }: { persona: Persona }) {
 function HistoryPicker({ history, onPick }: { history: GiftRun[]; onPick: (h: GiftRun) => void }) {
   return (
     <select
-      className="ml-3 rounded bg-hi px-2 py-0.5 text-xs text-white outline-none"
+      className="ml-3 rounded-md border border-line bg-base px-2 py-0.5 text-xs text-text outline-none"
       onChange={(e) => onPick(history[Number(e.target.value)])}
       defaultValue={0}
-      aria-label="Past runs"
+      aria-label="Earlier runs"
     >
       {history.map((h, i) => (
         <option key={h.createdAt} value={i}>
-          {h.occasion.event} ${h.occasion.budget} · {new Date(h.createdAt).toLocaleDateString()}
+          {h.occasion.event}, ${h.occasion.budget}, {new Date(h.createdAt).toLocaleDateString()}
         </option>
       ))}
     </select>
@@ -227,25 +238,20 @@ function HistoryPicker({ history, onPick }: { history: GiftRun[]; onPick: (h: Gi
 
 function AgentLog({ run }: { run: RunState }) {
   return (
-    <section className="mb-8 rounded-lg bg-white/[.04] p-4" aria-live="polite">
-      <h2 className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-sub">
-        {run.running && <Equalizer />} Agent log
-      </h2>
-      <ol className="flex flex-col gap-1">
+    <section className="mt-6 rounded-2xl border border-line p-4 sm:p-5" aria-live="polite">
+      <h2 className="font-display text-lg font-semibold">{run.running ? "Working on it" : "How these were found"}</h2>
+      <p className="mb-3 text-sm text-sub">Qloo maps the taste, the strategist plans ideas, the shopper finds listings.</p>
+      <ol className="flex flex-col">
         {run.steps.map((s) => (
-          <li key={s.id} className="rise flex items-start gap-3 rounded-md px-2 py-1.5">
-            <span className="mt-0.5 grid size-5 shrink-0 place-items-center">
-              {s.status === "running" ? <LoaderCircle className="size-4 animate-spin text-green" /> : s.status === "done" ? <Check className="size-4 text-green" /> : <CircleAlert className="size-4 text-[#ff8a8a]" />}
+          <li key={s.id} className="grid grid-cols-[1.25rem_5.5rem_minmax(0,1fr)] items-start gap-2 py-1.5">
+            <span className="mt-0.5 grid size-5 place-items-center">
+              {s.status === "running" ? <LoaderCircle className="size-4 animate-spin text-ribbon" /> : s.status === "done" ? <Check className="size-4 text-sub" /> : <CircleAlert className="size-4 text-alert" />}
             </span>
+            <span className={`text-sm font-semibold ${AGENT_LABEL[s.agent].className}`}>{AGENT_LABEL[s.agent].name}</span>
             <span className="min-w-0">
-              <span className={`block text-sm ${s.status === "running" ? "text-white" : "text-white/85"}`}>{s.label}</span>
-              {s.detail && <span className="block truncate text-xs text-sub">{s.detail}</span>}
+              <span className="block text-sm">{s.label}</span>
+              {s.detail && <span className="block text-xs leading-relaxed text-sub">{s.detail}</span>}
             </span>
-          </li>
-        ))}
-        {run.thoughts.slice(-1).map((t) => (
-          <li key={t} className="px-2 py-1 text-sm italic text-sub">
-            “{t.slice(0, 220)}”
           </li>
         ))}
       </ol>
@@ -253,68 +259,73 @@ function AgentLog({ run }: { run: RunState }) {
   );
 }
 
-function GiftList({ gifts }: { gifts: Gift[] }) {
+function GiftList({ gifts, name }: { gifts: Gift[]; name: string }) {
   return (
-    <div className="mb-8">
-      <div className="hidden grid-cols-[2rem_minmax(0,1fr)_minmax(0,16rem)_6rem] gap-4 border-b border-line px-4 pb-2 text-sm text-sub lg:grid">
-        <span className="text-right">#</span>
-        <span>Gift</span>
-        <span>Taste trail</span>
-        <span className="text-right">Price</span>
-      </div>
-      <ol className="mt-2">
-        {gifts.map((g, i) => (
-          <li
-            key={g.product.url + i}
-            className="rise group grid grid-cols-[1.5rem_minmax(0,1fr)] gap-x-3 gap-y-2 rounded-md px-2 py-3 transition-colors hover:bg-white/[.07] sm:px-4 lg:grid-cols-[2rem_minmax(0,1fr)_minmax(0,16rem)_6rem] lg:gap-4"
-            style={{ animationDelay: `${i * 60}ms` }}
-          >
-            <span className="pt-3 text-right tabular-nums text-sub">{i + 1}</span>
-            <div className="flex min-w-0 gap-3">
-              <a href={g.product.url} target="_blank" rel="noopener noreferrer" className="shrink-0">
-                {g.product.image ? (
-                  <img src={g.product.image} alt="" className="size-14 rounded bg-white object-contain p-1 sm:size-16" />
-                ) : (
-                  <span className="grid size-14 place-items-center rounded bg-hi sm:size-16">
-                    <ExternalLink className="size-5 text-sub" />
+    <ol className="grid gap-4 xl:grid-cols-2">
+      {gifts.map((g, i) => {
+        const isListing = g.product.source !== "search-link";
+        return (
+          <li key={g.product.url + i} className="unwrap flex flex-col gap-4 rounded-2xl bg-card p-4 sm:flex-row sm:p-5" style={{ animationDelay: `${i * 70}ms` }}>
+            <a href={g.product.url} target="_blank" rel="noopener noreferrer" className="shrink-0 self-start" aria-label={`${g.headline} on Amazon`}>
+              {g.product.image ? (
+                <img src={g.product.image} alt="" className="size-28 rounded-xl bg-white object-contain p-2 sm:size-32" />
+              ) : (
+                <span className="grid size-28 place-items-center rounded-xl bg-hi sm:size-32">
+                  <GiftIcon className="size-8 text-sub" />
+                </span>
+              )}
+            </a>
+            <div className="flex min-w-0 flex-1 flex-col">
+              <h3 className="font-display text-xl font-semibold leading-snug">{g.headline}</h3>
+              {isListing && <p className="mt-1 line-clamp-2 text-sm text-sub">{g.product.title}</p>}
+
+              <div className="mt-3 border-l-2 border-ribbon pl-3">
+                <p className="text-xs font-semibold text-ribbon">Why it fits {name}</p>
+                <p className="mt-1 text-[15px] leading-relaxed">{g.reasoning}</p>
+              </div>
+
+              {g.trail.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {g.trail.map((t, j) => (
+                    <span key={j} className="flex max-w-full items-center gap-1.5 rounded-full bg-hi py-0.5 pl-0.5 pr-2.5 text-xs">
+                      {t.image ? <img src={t.image} alt="" className="size-5 rounded-full object-cover" /> : <span className="size-5 rounded-full bg-line" />}
+                      <span className="truncate">
+                        {t.from && t.via ? (
+                          <>
+                            {t.from} <span className="text-sub">led to</span> {t.via}
+                          </>
+                        ) : (
+                          (t.via ?? t.from)
+                        )}
+                      </span>
+                      {t.affinity ? <span className="font-semibold text-ribbon">{Math.round(t.affinity * 100)}% match</span> : null}
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 pt-1 sm:mt-auto sm:pt-4">
+                {g.product.priceDisplay && <span className="font-display text-xl font-semibold tabular-nums">{g.product.priceDisplay}</span>}
+                {g.product.rating ? (
+                  <span className="flex items-center gap-1 text-sm text-sub">
+                    <Star className="size-3.5 fill-current text-ribbon" /> {g.product.rating}
+                    {g.product.reviews ? ` (${g.product.reviews.toLocaleString()} reviews)` : ""}
                   </span>
-                )}
-              </a>
-              <div className="min-w-0">
-                <p className="font-bold leading-snug">{g.headline}</p>
-                <a href={g.product.url} target="_blank" rel="noopener noreferrer" className="mt-0.5 line-clamp-1 text-sm text-sub hover:text-white hover:underline">
-                  {g.product.source === "search-link" ? `Search Amazon for “${g.product.title}”` : g.product.title}
+                ) : null}
+                <a
+                  href={g.product.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="ml-auto inline-flex items-center gap-1.5 rounded-full bg-ribbon px-4 py-2 text-sm font-semibold text-ink transition-colors hover:bg-ribbon-deep"
+                >
+                  {isListing ? "View on Amazon" : "Search on Amazon"} <ExternalLink className="size-3.5" />
                 </a>
-                <p className="mt-1.5 text-sm leading-relaxed text-white/80">{g.reasoning}</p>
               </div>
             </div>
-            <div className="col-start-2 flex flex-wrap content-start gap-1.5 lg:col-start-auto lg:pt-1">
-              {g.trail.slice(0, 3).map((t, j) => (
-                <span key={j} className="flex max-w-full items-center gap-1.5 rounded-full bg-hi py-0.5 pl-0.5 pr-2.5 text-xs">
-                  {t.image ? <img src={t.image} alt="" className="size-5 rounded-full object-cover" /> : <span className="size-5 rounded-full bg-elev" />}
-                  <span className="truncate">
-                    {t.from}
-                    {t.via && t.via !== t.from && <span className="text-sub"> → {t.via}</span>}
-                  </span>
-                  {t.affinity ? <span className="font-bold text-green">{Math.round(t.affinity * 100)}%</span> : null}
-                </span>
-              ))}
-            </div>
-            <div className="col-start-2 flex items-center gap-3 lg:col-start-auto lg:flex-col lg:items-end lg:gap-1 lg:pt-1">
-              <span className="font-bold tabular-nums">{g.product.priceDisplay ?? "—"}</span>
-              {g.product.rating ? (
-                <span className="flex items-center gap-1 text-xs text-sub">
-                  <Star className="size-3 fill-current" /> {g.product.rating} {g.product.reviews ? `(${g.product.reviews.toLocaleString()})` : ""}
-                </span>
-              ) : null}
-              <a href={g.product.url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs font-bold text-sub hover:text-white">
-                Amazon <ExternalLink className="size-3" />
-              </a>
-            </div>
           </li>
-        ))}
-      </ol>
-    </div>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -340,26 +351,26 @@ function Compare({ persona, occasion }: { persona: Persona; occasion: Occasion }
 
   if (!ideas) {
     return (
-      <div className="mb-10 flex flex-wrap items-center gap-3 rounded-lg bg-card p-4">
+      <div className="mt-6 flex flex-wrap items-center gap-3 rounded-2xl border border-line p-4">
         <Scale className="size-5 text-sub" />
-        <p className="flex-1 text-sm text-sub">What would the same AI suggest without Qloo&apos;s taste graph?</p>
-        <button onClick={load} disabled={loading} className="flex items-center gap-2 rounded-full border border-white/30 px-4 py-1.5 text-sm font-bold hover:border-white disabled:opacity-50">
+        <p className="flex-1 text-sm text-sub">See what the same AI suggests for {persona.name} without Qloo&apos;s taste graph.</p>
+        <button onClick={load} disabled={loading} className="flex items-center gap-2 rounded-full border border-text/30 px-4 py-1.5 text-sm font-semibold hover:border-text disabled:opacity-50">
           {loading && <LoaderCircle className="size-4 animate-spin" />} Compare
         </button>
-        {error && <p className="w-full text-sm text-[#ff8a8a]">{error}</p>}
+        {error && <p className="w-full text-sm text-alert">Comparison failed: {error}</p>}
       </div>
     );
   }
 
   return (
-    <section className="mb-10 rounded-lg bg-card p-5">
-      <h3 className="font-bold">Without Qloo, the same model guessed:</h3>
-      <p className="mb-4 text-sm text-sub">Same persona, same occasion, no taste graph — no brands, no cross-domain signal, no listings.</p>
-      <ol className="grid gap-2 sm:grid-cols-2">
+    <section className="mt-6 rounded-2xl border border-line p-5">
+      <h3 className="font-display text-lg font-semibold">Without Qloo, the same model suggests</h3>
+      <p className="mb-4 text-sm text-sub">Same person, same occasion. No taste graph, so no brand signal and no listings.</p>
+      <ol className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
         {ideas.map((idea, i) => (
-          <li key={i} className="rounded-md bg-white/[.04] p-3">
-            <p className="text-sm font-bold">{idea.title}</p>
-            <p className="mt-1 text-xs leading-relaxed text-sub">{idea.reason}</p>
+          <li key={i}>
+            <p className="text-sm font-semibold">{idea.title}</p>
+            <p className="mt-0.5 text-sm leading-relaxed text-sub">{idea.reason}</p>
           </li>
         ))}
       </ol>
@@ -368,25 +379,25 @@ function Compare({ persona, occasion }: { persona: Persona; occasion: Occasion }
 }
 
 const SHELVES: [string, string][] = [
-  ["brand", "Brands they'd gravitate to"],
-  ["book", "On their nightstand"],
-  ["artist", "In their rotation"],
-  ["movie", "Their kind of films"],
-  ["tv_show", "Shows they'd binge"],
-  ["videogame", "Games they'd sink into"],
-  ["podcast", "In their earbuds"],
-  ["place", "Their kind of places"],
+  ["brand", "Brands"],
+  ["book", "Books"],
+  ["artist", "Artists"],
+  ["movie", "Films"],
+  ["tv_show", "Shows"],
+  ["videogame", "Games"],
+  ["podcast", "Podcasts"],
+  ["place", "Places nearby"],
 ];
 
-function TasteShelves({ profile }: { profile: TasteProfile }) {
+function TasteShelves({ profile, name }: { profile: TasteProfile; name: string }) {
   return (
-    <section className="mt-2">
-      <h2 className="text-2xl font-bold tracking-tight">Their taste, decoded</h2>
-      <p className="text-sm text-sub">What Qloo&apos;s taste graph says people who love the same things over-index on.</p>
+    <section className="mt-14">
+      <h2 className="font-display text-3xl font-semibold">What people with {name}&apos;s taste love</h2>
+      <p className="mt-1 max-w-2xl text-sm text-sub">Qloo&apos;s taste graph, seeded with everything {name} loves. These are signals the agents worked from, not gift picks.</p>
       {profile.dna.length > 0 && (
         <div className="mt-4 flex flex-wrap gap-2">
           {profile.dna.map((d) => (
-            <span key={d.name} className="rounded-full border border-white/15 px-3 py-1 text-sm">
+            <span key={d.name} className="rounded-full bg-hi px-3 py-1 text-sm">
               {d.name}
             </span>
           ))}
@@ -402,20 +413,19 @@ function TasteShelves({ profile }: { profile: TasteProfile }) {
 
 function Shelf({ title, items }: { title: string; items: QlooEntity[] }) {
   return (
-    <div className="mt-6">
-      <h3 className="mb-2 text-lg font-bold">{title}</h3>
-      <ul className="no-scrollbar -mx-3 flex gap-1 overflow-x-auto px-1">
+    <div className="mt-7">
+      <h3 className="mb-3 font-semibold">{title}</h3>
+      <ul className="no-scrollbar flex gap-4 overflow-x-auto">
         {items.slice(0, 10).map((e) => (
-          <li key={e.id} className="w-36 shrink-0 rounded-lg p-2 transition-colors hover:bg-card sm:w-44 sm:p-3">
+          <li key={e.id} className="w-32 shrink-0 sm:w-40">
             {e.image ? (
-              <img src={e.image} alt="" className="aspect-square w-full rounded-md bg-hi object-cover shadow-lg" />
+              <img src={e.image} alt="" className="aspect-square w-full rounded-xl bg-hi object-cover" />
             ) : (
-              <div className="grid aspect-square w-full place-items-center rounded-md bg-hi text-3xl font-black text-sub">{e.name.slice(0, 1)}</div>
+              <div className="font-display grid aspect-square w-full place-items-center rounded-xl bg-hi text-3xl text-sub">{e.name.slice(0, 1)}</div>
             )}
-            <p className="mt-2 truncate text-sm font-bold">{e.name}</p>
+            <p className="mt-2 truncate text-sm font-semibold">{e.name}</p>
             <p className="text-xs text-sub">
-              <span className="font-bold text-green">{Math.round(e.affinity * 100)}% match</span>
-              {e.keywords?.[0] ? ` · ${e.keywords[0]}` : ""}
+              <span className="font-semibold text-ribbon">{Math.round(e.affinity * 100)}% match</span>
             </p>
           </li>
         ))}
@@ -426,13 +436,13 @@ function Shelf({ title, items }: { title: string; items: QlooEntity[] }) {
 
 function Loves({ persona }: { persona: Persona }) {
   return (
-    <section className="mt-6">
-      <h2 className="mb-2 text-2xl font-bold tracking-tight">What {persona.name} loves</h2>
-      <ul className="no-scrollbar -mx-3 flex gap-1 overflow-x-auto px-1">
+    <section className="mt-12">
+      <h2 className="font-display mb-4 text-3xl font-semibold">What {persona.name} loves</h2>
+      <ul className="no-scrollbar flex gap-4 overflow-x-auto">
         {persona.loves.map((l) => (
-          <li key={l.id} className="w-36 shrink-0 rounded-lg p-2 sm:w-44 sm:p-3">
-            <SeedThumb seed={l} className="aspect-square w-full shadow-lg" />
-            <p className="mt-2 truncate text-sm font-bold">{l.name}</p>
+          <li key={l.id} className="w-32 shrink-0 sm:w-40">
+            <SeedThumb seed={l} className="aspect-square w-full" />
+            <p className="mt-2 truncate text-sm font-semibold">{l.name}</p>
             <p className="text-xs text-sub">{typeLabel(l.type)}</p>
           </li>
         ))}

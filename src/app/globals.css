@@ -1,30 +1,45 @@
 @import "tailwindcss";
 
+/* Wrapt: gift wrap at night. Aubergine paper, marigold ribbon. */
 @theme {
-  --color-ink: #000000;
-  --color-base: #121212;
-  --color-card: #181818;
-  --color-elev: #1f1f1f;
-  --color-hi: #2a2a2a;
-  --color-line: #2e2e2e;
-  --color-sub: #b3b3b3;
-  --color-dim: #7a7a7a;
-  --color-green: #1ed760;
-  --color-green-deep: #1db954;
-  --font-sans: var(--font-figtree), ui-sans-serif, system-ui, sans-serif;
+  --color-ink: #120c16;
+  --color-base: #1b1320;
+  --color-card: #241a2b;
+  --color-hi: #30243a;
+  --color-line: #3b2d46;
+  --color-text: #f6eef4;
+  --color-sub: #b9a9bf;
+  --color-dim: #8a7a92;
+  --color-ribbon: #f4b740;
+  --color-ribbon-deep: #e09a1a;
+  --color-lilac: #c9b3ff;
+  --color-alert: #ff9b8a;
+  --font-sans: var(--font-schibsted), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-fraunces), ui-serif, Georgia, serif;
 }
 
 html,
 body {
   background: var(--color-ink);
-  color: #fff;
+  color: var(--color-text);
   color-scheme: dark;
 }
 
-/* Thin, Spotify-ish scrollbars inside panels */
+/* Fraunces at its softest: rounded terminals read as friendly, not bookish. */
+.font-display {
+  font-variation-settings:
+    "SOFT" 100,
+    "WONK" 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ribbon);
+  outline-offset: 2px;
+}
+
 .scroll-panel {
   scrollbar-width: thin;
-  scrollbar-color: #4d4d4d transparent;
+  scrollbar-color: #4a3a55 transparent;
 }
 
 .no-scrollbar {
@@ -34,44 +49,39 @@ body {
   display: none;
 }
 
-/* "Now playing" equalizer */
-@keyframes eq {
+@keyframes pulse-dot {
   0%,
   100% {
-    transform: scaleY(0.3);
+    opacity: 1;
+    transform: scale(1);
   }
   50% {
-    transform: scaleY(1);
+    opacity: 0.45;
+    transform: scale(0.7);
   }
 }
-.eq span {
+.pulse-dot {
   display: inline-block;
-  width: 3px;
-  height: 14px;
-  margin-right: 2px;
-  background: var(--color-green);
-  transform-origin: bottom;
-  animation: eq 0.9s ease-in-out infinite;
-}
-.eq span:nth-child(2) {
-  animation-delay: -0.3s;
-}
-.eq span:nth-child(3) {
-  animation-delay: -0.6s;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--color-ribbon);
+  animation: pulse-dot 1.2s ease-in-out infinite;
 }
 
-@keyframes rise {
+/* Gifts arriving is the one orchestrated moment. */
+@keyframes unwrap {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(10px) scale(0.98);
   }
   to {
     opacity: 1;
     transform: none;
   }
 }
-.rise {
-  animation: rise 0.35s ease-out both;
+.unwrap {
+  animation: unwrap 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
 @keyframes story-progress {
@@ -84,8 +94,8 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .eq span,
-  .rise {
+  .pulse-dot,
+  .unwrap {
     animation: none;
   }
 }

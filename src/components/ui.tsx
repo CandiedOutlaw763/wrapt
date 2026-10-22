@@ -2,18 +2,19 @@
 
 /* eslint-disable @next/next/no-img-element -- remote Qloo/Amazon images, sizes vary */
 
+import { useId } from "react";
 import type { Persona, TasteSeed } from "@/lib/types";
 
-/** Cover gradients, one per persona hue. [cover top, cover bottom, page header]. */
+/** Wrapping papers, one per persona: [paper, ribbon, page header]. */
 export const HUES: [string, string, string][] = [
-  ["#e8115b", "#7a0a30", "#8c1d40"],
-  ["#1e3264", "#0d1730", "#2b4380"],
-  ["#148a08", "#0a4504", "#1c6b14"],
-  ["#e1300a", "#6e1805", "#a3290f"],
-  ["#8d67ab", "#3e2b4d", "#5f4775"],
-  ["#509bf5", "#1d4c85", "#2f6db0"],
-  ["#ba5d07", "#5a2d03", "#8a4a0d"],
-  ["#27856a", "#103b2f", "#1f6352"],
+  ["#b8325a", "#f4b740", "#5e1a33"],
+  ["#2a3a7a", "#f2c6d8", "#1b2550"],
+  ["#2f6b4f", "#f4b740", "#173a2b"],
+  ["#d9622b", "#fff1d6", "#6b2c12"],
+  ["#7b5ea7", "#f4b740", "#3d2c58"],
+  ["#237a86", "#ffd5a8", "#123f46"],
+  ["#c98b1e", "#3b1f4a", "#5e400c"],
+  ["#c46a86", "#fff1d6", "#5f2b3d"],
 ];
 
 export const hue = (p: Pick<Persona, "hue">) => HUES[p.hue % HUES.length];
@@ -46,38 +47,45 @@ export const AGE_OPTIONS: { value: NonNullable<Persona["age"]>; label: string }[
 
 export const ageLabel = (a?: Persona["age"]) => AGE_OPTIONS.find((o) => o.value === a)?.label;
 
-/** Playlist-style cover: a 2×2 mosaic of what they love, or a gradient monogram. */
-export function Cover({ persona, size = "md", className = "" }: { persona: Persona; size?: "sm" | "md" | "lg"; className?: string }) {
-  const [from, to] = hue(persona);
-  const pics = persona.loves.map((l) => l.image).filter(Boolean) as string[];
-  const dims = size === "sm" ? "size-12 rounded" : size === "lg" ? "size-36 sm:size-52 rounded-md" : "size-full rounded-md";
-  const letter = size === "sm" ? "text-xl" : size === "lg" ? "text-7xl sm:text-8xl" : "text-5xl";
+const SIZES = {
+  sm: "size-11 rounded-md",
+  md: "size-full rounded-xl",
+  lg: "size-40 sm:size-52 rounded-2xl",
+};
 
-  if (pics.length >= 4) {
-    return (
-      <div className={`${dims} grid grid-cols-2 overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,.5)] ${className}`}>
-        {pics.slice(0, 4).map((src, i) => (
-          <img key={i} src={src} alt="" className="size-full object-cover" />
-        ))}
-      </div>
-    );
-  }
+/** A persona's cover: their initial on a wrapped box, in their own paper and ribbon. */
+export function Cover({ persona, size = "md", className = "" }: { persona: Pick<Persona, "name" | "hue">; size?: keyof typeof SIZES; className?: string }) {
+  const [paper, ribbon] = hue(persona);
+  const pattern = useId();
   return (
-    <div
-      className={`${dims} relative grid place-items-center overflow-hidden shadow-[0_8px_24px_rgba(0,0,0,.5)] ${className}`}
-      style={{ background: `linear-gradient(135deg, ${from}, ${to})` }}
-    >
-      <span className={`${letter} font-black tracking-tighter text-white/90`}>{persona.name.slice(0, 1).toUpperCase()}</span>
-    </div>
+    <svg viewBox="0 0 100 100" className={`${SIZES[size]} shrink-0 overflow-hidden shadow-[0_10px_30px_rgba(0,0,0,.45)] ${className}`} role="img" aria-label={`${persona.name || "New persona"} cover`}>
+      <defs>
+        <pattern id={pattern} width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(30)">
+          <circle cx="2" cy="2" r="1.1" fill="#fff" opacity="0.13" />
+        </pattern>
+      </defs>
+      <rect width="100" height="100" fill={paper} />
+      <rect width="100" height="100" fill={`url(#${pattern})`} />
+      <rect x="60" width="10" height="100" fill={ribbon} />
+      <rect y="60" width="100" height="10" fill={ribbon} />
+      <g fill={ribbon} stroke="#000" strokeOpacity="0.18" strokeWidth="0.8">
+        <ellipse cx="57" cy="58" rx="11" ry="6" transform="rotate(-32 57 58)" />
+        <ellipse cx="73" cy="58" rx="11" ry="6" transform="rotate(32 73 58)" />
+        <circle cx="65" cy="63" r="4.2" />
+      </g>
+      <text x="11" y="48" fill="#fff" fillOpacity="0.92" fontSize="42" fontWeight="600" style={{ fontFamily: "var(--font-fraunces)", fontVariationSettings: '"SOFT" 100' }}>
+        {(persona.name || "?").slice(0, 1).toUpperCase()}
+      </text>
+    </svg>
   );
 }
 
 export function SeedThumb({ seed, className = "" }: { seed: Pick<TasteSeed, "image" | "name" | "type">; className?: string }) {
   const round = seed.type === "urn:entity:artist" || seed.type === "urn:entity:person";
   return seed.image ? (
-    <img src={seed.image} alt="" className={`object-cover ${round ? "rounded-full" : "rounded"} ${className}`} />
+    <img src={seed.image} alt="" className={`object-cover ${round ? "rounded-full" : "rounded-lg"} ${className}`} />
   ) : (
-    <div className={`grid place-items-center bg-hi text-sub font-bold ${round ? "rounded-full" : "rounded"} ${className}`}>{seed.name.slice(0, 1)}</div>
+    <div className={`font-display grid place-items-center bg-hi text-sub ${round ? "rounded-full" : "rounded-lg"} ${className}`}>{seed.name.slice(0, 1)}</div>
   );
 }
 
@@ -87,8 +95,8 @@ export function Pill({ active, children, onClick }: { active?: boolean; children
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
-        active ? "bg-white text-black" : "bg-white/[.07] text-white hover:bg-white/[.12]"
+      className={`shrink-0 whitespace-nowrap rounded-full border px-3.5 py-1.5 text-sm transition-colors ${
+        active ? "border-ribbon bg-ribbon/15 font-semibold text-ribbon" : "border-line text-text hover:border-sub"
       }`}
     >
       {children}
@@ -96,12 +104,22 @@ export function Pill({ active, children, onClick }: { active?: boolean; children
   );
 }
 
-export function Equalizer() {
+export function Wordmark({ className = "" }: { className?: string }) {
   return (
-    <span className="eq inline-flex items-end" aria-hidden>
-      <span />
-      <span />
-      <span />
+    <span className={`font-display flex items-center gap-2 text-2xl font-semibold tracking-tight ${className}`}>
+      <svg viewBox="0 0 32 32" className="size-7" aria-hidden>
+        <rect x="3" y="11" width="26" height="18" rx="3" fill="var(--color-ribbon)" />
+        <rect x="14" y="11" width="4" height="18" fill="#120c16" opacity="0.35" />
+        <g fill="none" stroke="var(--color-ribbon)" strokeWidth="2.4" strokeLinecap="round">
+          <path d="M16 10c-3-6-9-6-9-2s6 2 9 2z" />
+          <path d="M16 10c3-6 9-6 9-2s-6 2-9 2z" />
+        </g>
+      </svg>
+      Wrapt
     </span>
   );
+}
+
+export function PulseDot() {
+  return <span className="pulse-dot" aria-hidden />;
 }
