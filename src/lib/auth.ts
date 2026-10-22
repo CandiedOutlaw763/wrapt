@@ -37,10 +37,18 @@ export function useAuth(): Auth {
   useEffect(() => {
     const fb = firebase();
     if (!fb) return;
-    return onAuthStateChanged(fb.auth, (u) => {
+    // If Firebase is slow to restore the session, show the signed-out UI rather than nothing;
+    // a late sign-in still arrives through the listener.
+    const fallback = setTimeout(() => setReady(true), 4000);
+    const unsubscribe = onAuthStateChanged(fb.auth, (u) => {
+      clearTimeout(fallback);
       setUser(u);
       setReady(true);
     });
+    return () => {
+      clearTimeout(fallback);
+      unsubscribe();
+    };
   }, []);
 
   // Linking keeps the same uid (so a guest's personas carry over) and updates the User in
@@ -104,6 +112,8 @@ const MESSAGES: Record<string, string> = {
   "auth/popup-closed-by-user": "The Google window was closed before signing in.",
   "auth/popup-blocked": "Your browser blocked the Google window. Allow pop-ups for this site and try again.",
   "auth/operation-not-allowed": "This sign-in method isn't turned on in the Firebase console yet.",
+  "auth/configuration-not-found": "Sign-in isn't set up for this Firebase project yet. Open Authentication in the Firebase console and click Get started.",
+  "auth/admin-restricted-operation": "Guest sign-in isn't turned on in the Firebase console yet.",
   "auth/unauthorized-domain": "This domain isn't authorized in Firebase. Add it under Authentication → Settings → Authorized domains.",
   "auth/too-many-requests": "Too many attempts. Wait a minute and try again.",
   "auth/network-request-failed": "Couldn't reach Firebase. Check your connection.",

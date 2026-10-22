@@ -96,13 +96,13 @@ export default function App() {
       .catch(() => setMarketState(guessMarketFromBrowser()));
   }, []);
 
-  // Signed in → the account's personas in Firestore; signed out → this browser's.
+  // Signed in → the account's personas in Firestore; otherwise (or until Firebase has
+  // restored the session) this browser's, so the page never waits on auth to render.
   const uid = auth.user?.uid;
   useEffect(() => {
-    if (!auth.ready) return;
     let live = true;
     (async () => {
-      const user = firebaseUser(auth);
+      const user = auth.ready ? firebaseUser(auth) : null;
       if (user) {
         try {
           await prepareAccount(user);
