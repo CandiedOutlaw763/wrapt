@@ -1,0 +1,11 @@
+rules_version = '2';
+
+// Each signed-in user (including guests) can read and write only their own tree:
+// users/{uid}, users/{uid}/personas/{id}, users/{uid}/personas/{id}/runs/{runId}.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

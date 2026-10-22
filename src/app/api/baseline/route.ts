@@ -1,5 +1,6 @@
 import { chat } from "@/lib/groq";
 import type { BaselineIdea, Occasion, Persona } from "@/lib/types";
+import { formatMoney, marketFor } from "@/lib/markets";
 
 /**
  * The control group: the same model with the same persona, but no taste graph.
@@ -16,7 +17,7 @@ export async function POST(req: Request) {
         { role: "system", content: 'Suggest gifts. Reply as JSON: {"ideas":[{"title":"...","reason":"..."}]} with exactly 6 ideas.' },
         {
           role: "user",
-          content: `Gift ideas for ${persona.name} (${persona.relationship}). They like: ${persona.loves.map((l) => l.name).join(", ")}. Hobbies: ${persona.hobbies || "n/a"}. Occasion: ${occasion.event}. Budget: $${occasion.budget}.`,
+          content: `Gift ideas for ${persona.name} (${persona.relationship}). They like: ${persona.loves.map((l) => l.name).join(", ")}. Hobbies: ${persona.hobbies || "n/a"}. Occasion: ${occasion.event}. Budget: ${formatMoney(occasion.budget, marketFor(occasion.market))}.`,
         },
       ],
     });

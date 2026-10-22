@@ -50,7 +50,10 @@ export interface Persona {
 
 export interface Occasion {
   event: string;
+  /** In the store's currency. */
   budget: number;
+  /** Amazon store country code (see markets.ts); missing on runs saved before stores existed = US. */
+  market?: string;
   note?: string;
 }
 

@@ -3,15 +3,14 @@
 /* eslint-disable @next/next/no-img-element -- remote Qloo/Amazon images */
 
 import { useEffect, useRef, useState } from "react";
-import { Check, CircleAlert, ExternalLink, Gift as GiftIcon, LoaderCircle, Pencil, RotateCcw, Scale, Sparkles, Star } from "lucide-react";
-import { loadRuns, saveRun } from "@/lib/store";
+import { Check, CircleAlert, ExternalLink, Gift as GiftIcon, LoaderCircle, Pencil, RotateCcw, Scale, Sparkles, Star, Trash2 } from "lucide-react";
+import { MARKETS, defaultBudget, formatMoney, marketFor } from "@/lib/markets";
 import type { AgentEvent, AgentName, BaselineIdea, Gift, GiftRun, Occasion, Persona, QlooEntity, TasteProfile } from "@/lib/types";
 import { useApp } from "./App";
 import { Cover, Pill, SeedThumb, ageLabel, hue, typeLabel } from "./ui";
 import { TasteStory } from "./TasteStory";
 
 const EVENTS = ["Birthday", "Anniversary", "Holidays", "Graduation", "Housewarming", "Thank you", "Just because"];
-const BUDGETS = [25, 50, 100, 200, 500];
 const EXPECTED_STEPS = 6;
 
 type Step = Extract<AgentEvent, { type: "step" }>;
@@ -32,25 +31,37 @@ const AGENT_LABEL: Record<AgentName, { name: string; className: string }> = {
 };
 
 export function PersonaView({ persona }: { persona: Persona }) {
-  const { go, setNowPlaying } = useApp();
-  const [occasion, setOccasion] = useState<Occasion>({ event: "Birthday", budget: 100 });
+  const { go, setNowPlaying, store, market, setMarket, confirmRemove } = useApp();
+  const [choice, setChoice] = useState<{ event: string; budget?: number }>({ event: "Birthday" });
+  // Budgets are per store currency, so a budget picked in another store falls back to this store's default.
+  const occasion: Occasion = {
+    event: choice.event,
+    budget: choice.budget !== undefined && market.budgets.includes(choice.budget) ? choice.budget : defaultBudget(market),
+    market: market.code,
+  };
   const [run, setRun] = useState<RunState | null>(null);
   const [history, setHistory] = useState<GiftRun[]>([]);
   const [showStory, setShowStory] = useState(false);
   const abort = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    const past = loadRuns(persona.id);
-    // Hydrate from storage after mount (not readable during prerender).
-    /* eslint-disable react-hooks/set-state-in-effect */
-    setHistory(past);
-    if (past[0]) {
-      setRun({ running: false, steps: [], profile: past[0].profile, gifts: past[0].gifts, occasion: past[0].occasion });
-      setOccasion(past[0].occasion);
-    }
-    /* eslint-enable react-hooks/set-state-in-effect */
-    return () => abort.current?.abort();
-  }, [persona.id]);
+    let live = true;
+    store
+      .loadRuns(persona.id)
+      .then((past) => {
+        if (!live) return;
+        setHistory(past);
+        if (past[0]) {
+          setRun((current) => current ?? { running: false, steps: [], profile: past[0].profile, gifts: past[0].gifts, occasion: past[0].occasion });
+          setChoice({ event: past[0].occasion.event, budget: past[0].occasion.budget });
+        }
+      })
+      .catch((err) => console.error("[runs]", err));
+    return () => {
+      live = false;
+      abort.current?.abort();
+    };
+  }, [persona.id, store]);
 
   async function start() {
     abort.current?.abort();
@@ -97,7 +108,7 @@ export function PersonaView({ persona }: { persona: Persona }) {
           else if (e.type === "gifts") {
             update({ gifts: e.gifts });
             const saved: GiftRun = { occasion, profile: state.profile!, gifts: e.gifts, createdAt: Date.now() };
-            saveRun(persona.id, saved);
+            store.saveRun(persona.id, saved).catch((err) => console.error("[runs] save failed", err));
             setHistory((h) => [saved, ...h].slice(0, 5));
           } else if (e.type === "error") update({ error: e.message });
         }
@@ -140,7 +151,7 @@ export function PersonaView({ persona }: { persona: Persona }) {
               <span className="w-16 shrink-0 text-sm text-sub">Occasion</span>
               <div className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
                 {EVENTS.map((e) => (
-                  <Pill key={e} active={occasion.event === e} onClick={() => setOccasion({ ...occasion, event: e })}>
+                  <Pill key={e} active={occasion.event === e} onClick={() => setChoice({ ...choice, event: e })}>
                     {e}
                   </Pill>
                 ))}
@@ -149,15 +160,32 @@ export function PersonaView({ persona }: { persona: Persona }) {
             <div className="flex items-center gap-3">
               <span className="w-16 shrink-0 text-sm text-sub">Budget</span>
               <div className="no-scrollbar flex min-w-0 gap-2 overflow-x-auto sm:flex-wrap sm:overflow-visible">
-                {BUDGETS.map((b) => (
-                  <Pill key={b} active={occasion.budget === b} onClick={() => setOccasion({ ...occasion, budget: b })}>
-                    Up to ${b}
+                {market.budgets.map((b) => (
+                  <Pill key={b} active={occasion.budget === b} onClick={() => setChoice({ ...choice, budget: b })}>
+                    Up to {formatMoney(b, market)}
                   </Pill>
                 ))}
               </div>
             </div>
+            <label className="flex items-center gap-3">
+              <span className="w-16 shrink-0 text-sm text-sub">Shop on</span>
+              <select
+                value={market.code}
+                onChange={(e) => setMarket(marketFor(e.target.value))}
+                className="rounded-full border border-line bg-base px-3.5 py-1.5 text-sm outline-none hover:border-sub"
+              >
+                {MARKETS.map((m) => (
+                  <option key={m.code} value={m.code}>
+                    {m.domain} ({m.name})
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className="flex items-center gap-2">
+            <button onClick={() => confirmRemove(persona)} className="grid size-11 place-items-center rounded-full text-sub hover:bg-hi hover:text-alert" aria-label={`Remove ${persona.name}`}>
+              <Trash2 className="size-5" />
+            </button>
             <button onClick={() => go({ name: "edit", id: persona.id })} className="grid size-11 place-items-center rounded-full text-sub hover:bg-hi hover:text-text" aria-label={`Edit ${persona.name}`}>
               <Pencil className="size-5" />
             </button>
@@ -195,7 +223,7 @@ export function PersonaView({ persona }: { persona: Persona }) {
               <div>
                 <h2 className="font-display text-3xl font-semibold">Gifts for {persona.name}</h2>
                 <p className="mt-1 text-sm text-sub">
-                  {run.occasion.event}, up to ${run.occasion.budget}
+                  {run.occasion.event}, up to {formatMoney(run.occasion.budget, marketFor(run.occasion.market))} on {marketFor(run.occasion.market).domain}
                   {history.length > 1 && <HistoryPicker history={history} onPick={(h) => setRun({ running: false, steps: [], profile: h.profile, gifts: h.gifts, occasion: h.occasion })} />}
                 </p>
               </div>
@@ -229,7 +257,7 @@ function HistoryPicker({ history, onPick }: { history: GiftRun[]; onPick: (h: Gi
     >
       {history.map((h, i) => (
         <option key={h.createdAt} value={i}>
-          {h.occasion.event}, ${h.occasion.budget}, {new Date(h.createdAt).toLocaleDateString()}
+          {h.occasion.event}, {formatMoney(h.occasion.budget, marketFor(h.occasion.market))}, {new Date(h.createdAt).toLocaleDateString()}
         </option>
       ))}
     </select>

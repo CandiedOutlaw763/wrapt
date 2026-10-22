@@ -1,6 +1,7 @@
 import { chat, RateLimited, type ChatOptions, type Message, type Reply, type ToolDef } from "./groq";
 import { insights, searchTags } from "./qloo";
 import { searchLink, searchProducts } from "./products";
+import { formatMoney, marketFor, type Market } from "./markets";
 import type { AgentEvent, AgentName, Gift, Occasion, Persona, Product, QlooEntity, TasteLink, TasteProfile } from "./types";
 
 // Two agents share the work, each on its own Groq key (lane):
@@ -175,14 +176,18 @@ The point of Wrapt is discovery: gifts they don't already own, found through wha
 - Spread ideas across domains, at most 2 per domain.
 - Only propose products that really exist on Amazon: a book, a record, a brand's own product line, gear for a hobby. Skip brands that don't sell giftable products there (car makers, airlines, restaurants, stores) and never invent branded merch such as a podcast mug or a car brand's cooler.
 - Fit the budget, occasion and relationship. No gift cards or generic filler.
+- Match their gender for anything gendered. If gender is not given, pick gender-neutral gifts. Avoid sized clothing and shoes unless the notes give a size.
+- Pick products sold in the store named under OCCASION; some brands aren't sold in every country.
 - "query" must find a real product: brand + product type ("Polaroid Now+ instant camera"), not vague phrases.
 - "why" talks to the giver about the recipient by name, in plain language, without numbers or the word Qloo.
 
 Call explore_taste at most twice, only if an idea needs more signal. Then call submit_plan.`;
 
-function shopperPrompt(name: string, budget: number) {
+function shopperPrompt(name: string, budget: string, gender: Persona["gender"]) {
+  const fit = gender === "female" || gender === "male" ? `made for a ${gender === "female" ? "woman" : "man"} or unisex` : "unisex (their gender isn't given)";
   return `You are the personal shopper on Wrapt, a two-agent gift team. The taste strategist planned gift ideas for ${name}, and Amazon has been searched for each. For every idea, pick the best listing:
-- matches the idea and brand, at or under $${budget};
+- matches the idea and brand, at or under ${budget};
+- anything gendered must be ${fit};
 - if the idea names a specific book, album or film, the listing must be that exact work, not a similarly titled one;
 - if the idea names a brand, prefer a listing from that brand;
 - new rather than renewed or used when possible, decent rating, a real gift rather than an accessory or part;
@@ -211,11 +216,11 @@ function personaFacts(p: Persona): string[] {
   ].filter(Boolean) as string[];
 }
 
-function strategistBrief(p: Persona, o: Occasion, profile: TasteProfile): string {
+function strategistBrief(p: Persona, o: Occasion, profile: TasteProfile, market: Market): string {
   const loves = profile.seeds.map((s) => `${s.name} (${s.type.replace("urn:entity:", "")}${s.tags?.length ? `; ${s.tags.slice(0, 4).join(", ")}` : ""})`);
   const lines = [
     ...personaFacts(p),
-    `OCCASION: ${o.event}. Budget: up to $${o.budget}.${o.note ? ` ${o.note}` : ""}`,
+    `OCCASION: ${o.event}. Budget: up to ${formatMoney(o.budget, market)}. Store: ${market.domain} (${market.name}).${o.note ? ` ${o.note}` : ""}`,
     `LOVES: ${loves.join("; ") || "(none)"}`,
     `HOBBIES: ${p.hobbies || "(none)"}`,
     `VIBE: ${profile.dna.map((d) => d.name).join(", ") || "(unknown)"}`,
@@ -344,9 +349,23 @@ function matches(product: Product, idea: Idea): boolean {
   return want.size > 0 && overlap / want.size >= 0.75;
 }
 
+// Listings explicitly made for one gender. "women's" must not count as "men's".
+const WOMENS = /\b(women'?s|womens|woman|ladies|lady'?s|girls'?|female)\b/i;
+const MENS = /\b(men'?s|mens|man'?s|boys'?|male|gentlemen'?s?)\b/i;
+
+/** Drop listings gendered for someone else; with no gender given, keep only ungendered ones. */
+function fitsGender(product: Product, gender: Persona["gender"]): boolean {
+  if (product.source === "search-link") return true;
+  const forWomen = WOMENS.test(product.title);
+  const forMen = MENS.test(product.title);
+  if (gender === "female") return !forMen || forWomen;
+  if (gender === "male") return !forWomen || forMen;
+  return !(forWomen !== forMen); // unisex listings mention both or neither
+}
+
 /** Without the shopper's judgement: the first in-budget listing that matches the idea, else an Amazon search. */
-function pickFallback(results: Product[], idea: Idea, budget: number): Product {
-  return results.find((p) => p.source !== "search-link" && (p.price === undefined || p.price <= budget) && matches(p, idea)) ?? searchLink(idea.query);
+function pickFallback(results: Product[], idea: Idea, budget: number, domain: string): Product {
+  return results.find((p) => p.source !== "search-link" && (p.price === undefined || p.price <= budget) && matches(p, idea)) ?? searchLink(idea.query, domain);
 }
 
 export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGenerator<AgentEvent> {
@@ -385,6 +404,13 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
   };
 
   const demo = { age: persona.age, gender: persona.gender };
+  const market = marketFor(occasion.market);
+  /** Search the persona's store, dropping listings gendered for someone else. */
+  const shop = async (query: string): Promise<Product[]> => {
+    const list = await searchProducts(query, { maxPrice: occasion.budget, domain: market.domain });
+    const fitting = list.filter((p) => fitsGender(p, persona.gender));
+    return fitting.length ? fitting : [searchLink(query, market.domain)];
+  };
   const sweeps = DOMAINS.map((d) =>
     insights({
       filterType: d.type,
@@ -456,7 +482,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
 
   const strategist: Message[] = [
     { role: "system", content: STRATEGIST_PROMPT },
-    { role: "user", content: strategistBrief(persona, occasion, profile) },
+    { role: "user", content: strategistBrief(persona, occasion, profile, market) },
   ];
   let ideas: Idea[] = [];
   let explores = 0;
@@ -615,7 +641,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
     detail: ideas.map((i) => `“${i.query}”`).join(", "),
     status: "running",
   };
-  const results = await Promise.all(ideas.map((i) => searchProducts(i.query, occasion.budget)));
+  const results = await Promise.all(ideas.map((i) => shop(i.query)));
   const listings = results.flat().filter((p) => p.source !== "search-link").length;
   yield {
     type: "step",
@@ -657,7 +683,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
   };
 
   const shopper: Message[] = [
-    { role: "system", content: shopperPrompt(persona.name, occasion.budget) },
+    { role: "system", content: shopperPrompt(persona.name, formatMoney(occasion.budget, market), persona.gender) },
     {
       role: "user",
       content: `${personaFacts(persona).join("\n")}\nOccasion: ${occasion.event}\n\n${planText}`,
@@ -706,7 +732,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
             label,
             status: "running",
           };
-          const more = await Promise.all(queries.map((q) => searchProducts(q, occasion.budget)));
+          const more = await Promise.all(queries.map((q) => shop(q)));
           yield {
             type: "step",
             id,
@@ -773,7 +799,7 @@ export async function* runAgent(persona: Persona, occasion: Occasion): AsyncGene
   const usedProducts = new Set<string>();
   ideas.forEach((idea, n) => {
     const pick = picks.find((p) => Number(p.idea) === n + 1 && !usedProducts.has(p.product_ref.trim()));
-    const product = pick ? products.get(pick.product_ref.trim())! : pickFallback(results[n], idea, occasion.budget);
+    const product = pick ? products.get(pick.product_ref.trim())! : pickFallback(results[n], idea, occasion.budget, market.domain);
     if (!product || usedProducts.has(product.url)) return;
     usedProducts.add(pick?.product_ref.trim() ?? product.url);
     usedProducts.add(product.url);

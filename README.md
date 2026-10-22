@@ -16,7 +16,8 @@ An LLM on its own guesses gifts from stereotypes ("she likes indie music → vin
 2. **Agent 1, the taste strategist** (Groq key 1) reads that profile and plans six gift ideas. At least four of them must come from a Qloo-recommended entity rather than from things the person already loves. It can call `explore_taste` for deeper Qloo lookups before calling `submit_plan`.
 3. **Every idea is searched on Amazon in parallel** via SerpApi.
 4. **Agent 2, the personal shopper** (Groq key 2) sees the plan and the listings, may run `search_amazon` again for misses, and calls `submit_gifts` with one listing per idea plus the final reason.
-5. **The server assembles the gifts.** Taste trails (`from → via`, with Qloo affinity) come from the plan and are checked against the Qloo data. If the shopper fails, each idea falls back to its best *matching* listing, or to an Amazon search link.
+5. **Listings gendered for someone else are dropped** before the shopper sees them. With no gender given, only unisex or ungendered listings are kept, and the agents avoid sized clothing unless the notes give a size.
+6. **The server assembles the gifts.** Taste trails (`from → via`, with Qloo affinity) come from the plan and are checked against the Qloo data. If the shopper fails, each idea falls back to its best *matching* listing, or to an Amazon search link.
 
 Progress streams to the UI as NDJSON and drives the agent log. When Groq rate-limits a key, the agents fail over to the other key, and pause visibly if both are limited. Qloo and SerpApi responses are cached (in memory, or in Upstash Redis if configured) to protect quotas.
 
@@ -37,6 +38,20 @@ npm run dev
 | `SERPAPI_KEY` | recommended | Amazon listings; 250 free searches/month |
 | `SERPAPI_KEY_2` | no | Takes over when the first key runs out |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | no | Persistent cache across serverless instances |
+| `NEXT_PUBLIC_FIREBASE_*` | no | Sign-in and cloud sync (see below). Without them, data stays in the browser |
+
+## Sign-in and saved data (Firebase)
+
+Sign-in is optional. Signed-out visitors keep their people in the browser. Signing in with **Google**, **email and password**, or as a **guest** saves personas and their last five gift runs to Firestore under `users/{uid}`. On first sign-in, whatever is already in the browser is copied into the account. A guest can later add Google or an email to the same account without losing anything.
+
+1. Create a project at https://console.firebase.google.com and add a **Web app**. Copy its config into the four `NEXT_PUBLIC_FIREBASE_*` variables.
+2. **Authentication → Sign-in method**: enable Google, Email/Password and Anonymous.
+3. **Firestore Database**: create a database, then paste [`firestore.rules`](firestore.rules) into the Rules tab and publish. It lets each user read and write only their own data.
+4. **Authentication → Settings → Authorized domains**: add your deployed domain (localhost is there by default).
+
+## Amazon stores
+
+Wrapt shops in the visitor's own Amazon store: amazon.in for India, amazon.co.uk for the UK, and so on across 10 stores. The store is picked from the hosting platform's IP country header (`x-vercel-ip-country`), falling back to the browser's time zone and language, and can be changed on any persona page. Budgets, prices and links all use that store's currency and domain.
 
 ## Deploy
 

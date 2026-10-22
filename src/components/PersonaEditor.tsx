@@ -21,7 +21,7 @@ const SEARCH_TYPES: [string, string][] = [
 ];
 
 export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boolean }) {
-  const { upsert, remove, go } = useApp();
+  const { upsert, confirmRemove, go } = useApp();
   const [p, setP] = useState<Persona>(initial);
   const set = <K extends keyof Persona>(k: K, v: Persona[K]) => setP((prev) => ({ ...prev, [k]: v }));
   const canSave = p.name.trim().length > 0 && p.loves.length > 0;
@@ -144,15 +144,10 @@ export function PersonaEditor({ initial, isNew }: { initial: Persona; isNew: boo
           {!canSave && <span className="text-sm text-sub">Add a name and at least one thing they love to save.</span>}
           {!isNew && (
             <button
-              onClick={() => {
-                if (confirm(`Delete ${p.name}? Their saved gift runs go too.`)) {
-                  remove(p.id);
-                  go({ name: "home" });
-                }
-              }}
-              className="ml-auto flex items-center gap-2 rounded-full px-4 py-3 text-sm font-semibold text-sub hover:text-text"
+              onClick={() => confirmRemove(initial)}
+              className="ml-auto flex items-center gap-2 rounded-full px-4 py-3 text-sm font-semibold text-sub hover:text-alert"
             >
-              <Trash2 className="size-4" /> Delete
+              <Trash2 className="size-4" /> Remove {initial.name}
             </button>
           )}
         </div>

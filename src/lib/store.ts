@@ -1,9 +1,26 @@
 "use client";
 
-// Personas and past gift runs live in the browser. Every read and write is
-// guarded so private windows or blocked storage just mean "no saved data".
+// Where personas and gift runs live: the browser for signed-out visitors, Firestore
+// (users/{uid}/personas/{id}/runs/{createdAt}) once someone signs in.
 
+import { collection, deleteDoc, doc, getDoc, getDocs, limit, orderBy, query, serverTimestamp, setDoc, writeBatch } from "firebase/firestore";
+import type { User } from "firebase/auth";
+import { firebase } from "./firebase";
 import type { GiftRun, Persona } from "./types";
+
+export interface Store {
+  kind: "local" | "cloud";
+  loadPersonas(): Promise<Persona[]>;
+  savePersona(p: Persona): Promise<void>;
+  deletePersona(id: string): Promise<void>;
+  loadRuns(personaId: string): Promise<GiftRun[]>;
+  saveRun(personaId: string, run: GiftRun): Promise<void>;
+}
+
+const RUNS_KEPT = 5;
+
+// ── Browser storage ──────────────────────────────────────────────────────────
+// Every read and write is guarded so private windows or blocked storage just mean "no saved data".
 
 const PERSONAS_KEY = "wrapt:personas";
 const runsKey = (id: string) => `wrapt:runs:${id}`;
@@ -25,26 +42,98 @@ function write(key: string, value: unknown) {
   }
 }
 
-export function loadPersonas(): Persona[] {
-  return read<Persona[]>(PERSONAS_KEY) ?? DEMO_PERSONAS;
+const localPersonas = () => read<Persona[]>(PERSONAS_KEY) ?? DEMO_PERSONAS;
+const localRuns = (id: string) => read<GiftRun[]>(runsKey(id)) ?? [];
+
+export const localStore: Store = {
+  kind: "local",
+  async loadPersonas() {
+    return localPersonas();
+  },
+  async savePersona(p) {
+    const all = localPersonas();
+    write(PERSONAS_KEY, all.some((x) => x.id === p.id) ? all.map((x) => (x.id === p.id ? p : x)) : [...all, p]);
+  },
+  async deletePersona(id) {
+    write(
+      PERSONAS_KEY,
+      localPersonas().filter((p) => p.id !== id),
+    );
+    try {
+      localStorage.removeItem(runsKey(id));
+    } catch {}
+  },
+  async loadRuns(personaId) {
+    return localRuns(personaId);
+  },
+  async saveRun(personaId, run) {
+    write(runsKey(personaId), [run, ...localRuns(personaId)].slice(0, RUNS_KEPT));
+  },
+};
+
+// ── Firestore ────────────────────────────────────────────────────────────────
+
+/** Firestore rejects `undefined`; a JSON round-trip drops those fields. */
+const clean = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+export function cloudStore(uid: string): Store {
+  const db = firebase()!.db;
+  const personas = collection(db, "users", uid, "personas");
+  const runs = (personaId: string) => collection(db, "users", uid, "personas", personaId, "runs");
+
+  return {
+    kind: "cloud",
+    async loadPersonas() {
+      const snap = await getDocs(query(personas, orderBy("createdAt")));
+      return snap.docs.map((d) => d.data() as Persona);
+    },
+    async savePersona(p) {
+      await setDoc(doc(personas, p.id), clean(p));
+    },
+    async deletePersona(id) {
+      const batch = writeBatch(db);
+      (await getDocs(runs(id))).forEach((r) => batch.delete(r.ref));
+      batch.delete(doc(personas, id));
+      await batch.commit();
+    },
+    async loadRuns(personaId) {
+      const snap = await getDocs(query(runs(personaId), orderBy("createdAt", "desc"), limit(RUNS_KEPT)));
+      return snap.docs.map((d) => d.data() as GiftRun);
+    },
+    async saveRun(personaId, run) {
+      await setDoc(doc(runs(personaId), String(run.createdAt)), clean(run));
+      // Keep only the latest few runs per persona.
+      const old = await getDocs(query(runs(personaId), orderBy("createdAt", "desc")));
+      await Promise.all(old.docs.slice(RUNS_KEPT).map((d) => deleteDoc(d.ref)));
+    },
+  };
 }
 
-export function savePersonas(personas: Persona[]) {
-  write(PERSONAS_KEY, personas);
-}
+/**
+ * Record the sign-in on users/{uid}. The first time an account is seen, copy this
+ * browser's personas and runs into it so nothing made before signing in is lost.
+ */
+export async function prepareAccount(user: User): Promise<void> {
+  const db = firebase()!.db;
+  const ref = doc(db, "users", user.uid);
+  const profile = {
+    email: user.email ?? null,
+    displayName: user.displayName ?? null,
+    provider: user.isAnonymous ? "anonymous" : (user.providerData[0]?.providerId ?? "unknown"),
+    lastSignInAt: serverTimestamp(),
+  };
+  const existing = await getDoc(ref);
+  if (existing.exists()) {
+    await setDoc(ref, profile, { merge: true });
+    return;
+  }
 
-export function loadRuns(personaId: string): GiftRun[] {
-  return read<GiftRun[]>(runsKey(personaId)) ?? [];
-}
-
-export function saveRun(personaId: string, run: GiftRun) {
-  write(runsKey(personaId), [run, ...loadRuns(personaId)].slice(0, 5));
-}
-
-export function deleteRuns(personaId: string) {
-  try {
-    localStorage.removeItem(runsKey(personaId));
-  } catch {}
+  const cloud = cloudStore(user.uid);
+  for (const p of localPersonas()) {
+    await cloud.savePersona(p);
+    for (const run of localRuns(p.id).reverse()) await cloud.saveRun(p.id, run);
+  }
+  await setDoc(ref, { ...profile, createdAt: serverTimestamp() });
 }
 
 export function newId(): string {
