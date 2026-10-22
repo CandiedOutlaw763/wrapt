@@ -35,6 +35,8 @@ interface AppState {
   setMarket: (m: Market) => void;
   auth: Auth;
   openSignIn: () => void;
+  /** Signed in, but the account's people haven't loaded yet; edits would land in the wrong place. */
+  syncing: boolean;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -72,6 +74,7 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [removing, setRemoving] = useState<Persona | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     // The hash is only readable after mount; afterwards state is the source of truth.
@@ -107,6 +110,7 @@ export default function App() {
     (async () => {
       const user = auth.ready ? firebaseUser(auth) : null;
       if (user) {
+        setSyncing(true);
         try {
           await prepareAccount(user);
           const cloud = cloudStore(user.uid);
@@ -115,6 +119,7 @@ export default function App() {
           setStore(cloud);
           setPersonas(list);
           setNotice(null);
+          setSyncing(false);
           return;
         } catch (err) {
           console.error("[account] falling back to this browser:", err);
@@ -125,6 +130,7 @@ export default function App() {
       if (!live) return;
       setStore(localStore);
       setPersonas(list);
+      setSyncing(false);
     })();
     return () => {
       live = false;
@@ -166,7 +172,9 @@ export default function App() {
     upsert: (p) => {
       // Only one persona can be "me": claiming it releases any other.
       const released = p.isSelf ? personas.filter((x) => x.isSelf && x.id !== p.id).map((x) => ({ ...x, isSelf: false })) : [];
-      const next = (personas.some((x) => x.id === p.id) ? personas.map((x) => (x.id === p.id ? p : x)) : [...personas, p]).map((x) => released.find((r) => r.id === x.id) ?? x);
+      const next = (personas.some((x) => x.id === p.id) ? personas.map((x) => (x.id === p.id ? p : x)) : [...personas, p]).map(
+        (x) => released.find((r) => r.id === x.id) ?? x,
+      );
       setPersonas(next);
       for (const x of [p, ...released]) store.savePersona(x).catch(saveFailed);
     },
@@ -178,6 +186,7 @@ export default function App() {
     setMarket,
     auth,
     openSignIn: () => setSigningIn(true),
+    syncing,
   };
 
   const current = view.name === "persona" ? personas.find((p) => p.id === view.id) : undefined;
@@ -198,10 +207,22 @@ export default function App() {
                 </button>
               </div>
             )}
-            {view.name === "home" && <Home />}
-            {view.name === "edit" && <PersonaEditor key={view.id ?? (view.self ? "me" : "new")} initial={editing ?? blankPersona(personas.length, view.self)} isNew={!editing} />}
-            {view.name === "persona" && current && <PersonaView key={current.id} persona={current} />}
-            {view.name === "persona" && !current && <Home />}
+            {syncing ? (
+              <div className="grid h-full place-items-center p-8 text-sub" aria-live="polite">
+                <p className="flex items-center gap-3">
+                  <PulseDot /> Loading your people…
+                </p>
+              </div>
+            ) : (
+              <>
+                {view.name === "home" && <Home />}
+                {view.name === "edit" && (
+                  <PersonaEditor key={view.id ?? (view.self ? "me" : "new")} initial={editing ?? blankPersona(personas.length, view.self)} isNew={!editing} />
+                )}
+                {view.name === "persona" && current && <PersonaView key={current.id} persona={current} />}
+                {view.name === "persona" && !current && <Home />}
+              </>
+            )}
           </main>
         </div>
       </div>
@@ -252,7 +273,11 @@ function AccountButton({ compact = false }: { compact?: boolean }) {
 
   if (compact) {
     return (
-      <button onClick={u.isAnonymous ? openSignIn : () => auth.signOut()} aria-label={u.isAnonymous ? "Save your account" : `Sign out ${name}`} className="grid size-10 place-items-center rounded-full">
+      <button
+        onClick={u.isAnonymous ? openSignIn : () => auth.signOut()}
+        aria-label={u.isAnonymous ? "Save your account" : `Sign out ${name}`}
+        className="grid size-10 place-items-center rounded-full"
+      >
         {avatar}
       </button>
     );
@@ -299,14 +324,17 @@ function MobileBar() {
 }
 
 function Sidebar({ activeId }: { activeId?: string }) {
-  const { personas, go, nowPlaying, confirmRemove } = useApp();
+  const { personas, go, nowPlaying, confirmRemove, syncing } = useApp();
   return (
     <aside className="hidden w-72 shrink-0 flex-col gap-2 md:flex">
       <nav className="rounded-2xl bg-base px-3 py-4">
         <button onClick={() => go({ name: "home" })} className="mb-3 px-3">
           <Wordmark />
         </button>
-        <button onClick={() => go({ name: "home" })} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-sub transition-colors hover:text-text">
+        <button
+          onClick={() => go({ name: "home" })}
+          className="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-semibold text-sub transition-colors hover:text-text"
+        >
           <House className="size-5" /> Home
         </button>
         <AccountButton />
@@ -324,31 +352,38 @@ function Sidebar({ activeId }: { activeId?: string }) {
           </button>
         </header>
         <ul className="scroll-panel min-h-0 flex-1 overflow-y-auto px-2 pb-2">
-          {[...personas].sort((a, b) => Number(!!b.isSelf) - Number(!!a.isSelf)).map((p) => (
-            <li key={p.id} className={`group flex items-center rounded-xl transition-colors hover:bg-hi ${activeId === p.id ? "bg-hi" : ""}`}>
-              <button
-                onClick={() => go({ name: "persona", id: p.id })}
-                aria-current={activeId === p.id ? "page" : undefined}
-                className="flex min-w-0 flex-1 items-center gap-3 p-2 text-left"
-              >
-                <Cover persona={p} size="sm" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-semibold">{p.name}</span>
-                  <span className="block truncate text-sm text-sub">{p.relationship}</span>
-                </span>
-                {nowPlaying?.personaId === p.id && <PulseDot />}
-              </button>
-              <button
-                onClick={() => confirmRemove(p)}
-                aria-label={`Remove ${p.name}`}
-                className="mr-2 grid size-8 shrink-0 place-items-center rounded-full text-sub opacity-0 transition-opacity hover:bg-base hover:text-alert focus-visible:opacity-100 group-hover:opacity-100"
-              >
-                <Trash2 className="size-4" />
-              </button>
-            </li>
-          ))}
+          {syncing && <li className="px-3 py-2 text-sm text-sub">Loading your people…</li>}
+          {!syncing &&
+            [...personas]
+              .sort((a, b) => Number(!!b.isSelf) - Number(!!a.isSelf))
+              .map((p) => (
+                <li key={p.id} className={`group flex items-center rounded-xl transition-colors hover:bg-hi ${activeId === p.id ? "bg-hi" : ""}`}>
+                  <button
+                    onClick={() => go({ name: "persona", id: p.id })}
+                    aria-current={activeId === p.id ? "page" : undefined}
+                    className="flex min-w-0 flex-1 items-center gap-3 p-2 text-left"
+                  >
+                    <Cover persona={p} size="sm" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-semibold">{p.name}</span>
+                      <span className="block truncate text-sm text-sub">{p.relationship}</span>
+                    </span>
+                    {nowPlaying?.personaId === p.id && <PulseDot />}
+                  </button>
+                  <button
+                    onClick={() => confirmRemove(p)}
+                    aria-label={`Remove ${p.name}`}
+                    className="mr-2 grid size-8 shrink-0 place-items-center rounded-full text-sub opacity-0 transition-opacity hover:bg-base hover:text-alert focus-visible:opacity-100 group-hover:opacity-100"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </li>
+              ))}
           <li>
-            <button onClick={() => go({ name: "edit" })} className="flex w-full items-center gap-3 rounded-xl p-2 text-left text-sub transition-colors hover:bg-hi hover:text-text">
+            <button
+              onClick={() => go({ name: "edit" })}
+              className="flex w-full items-center gap-3 rounded-xl p-2 text-left text-sub transition-colors hover:bg-hi hover:text-text"
+            >
               <span className="grid size-11 place-items-center rounded-md border border-dashed border-line">
                 <Plus className="size-5" />
               </span>

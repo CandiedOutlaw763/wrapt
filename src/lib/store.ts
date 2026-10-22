@@ -112,6 +112,8 @@ export function cloudStore(uid: string): Store {
 /**
  * Record the sign-in on users/{uid}. The first time an account is seen, copy this
  * browser's personas and runs into it so nothing made before signing in is lost.
+ * Each persona is at most 6 writes (itself plus 5 runs), so a single batch stays under
+ * Firestore's 500-write limit for up to about 80 people.
  */
 export async function prepareAccount(user: User): Promise<void> {
   const db = firebase()!.db;
@@ -128,12 +130,17 @@ export async function prepareAccount(user: User): Promise<void> {
     return;
   }
 
-  const cloud = cloudStore(user.uid);
+  // One atomic batch: the account record only exists once everything is copied, so an
+  // interrupted first sign-in (closed tab, reload) simply retries the import next time.
+  const batch = writeBatch(db);
   for (const p of localPersonas()) {
-    await cloud.savePersona(p);
-    for (const run of localRuns(p.id).reverse()) await cloud.saveRun(p.id, run);
+    batch.set(doc(db, "users", user.uid, "personas", p.id), clean(p));
+    for (const run of localRuns(p.id).slice(0, RUNS_KEPT)) {
+      batch.set(doc(db, "users", user.uid, "personas", p.id, "runs", String(run.createdAt)), clean(run));
+    }
   }
-  await setDoc(ref, { ...profile, createdAt: serverTimestamp() });
+  batch.set(ref, { ...profile, createdAt: serverTimestamp() });
+  await batch.commit();
 }
 
 export function newId(): string {
