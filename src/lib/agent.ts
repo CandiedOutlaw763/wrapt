@@ -308,6 +308,8 @@ async function* llm(agent: AgentName, opts: ChatOptions): AsyncGenerator<AgentEv
       return await chat(opts);
     } catch (err) {
       if (!(err instanceof RateLimited) || attempt >= 5) throw err;
+      // A wait this long means every key's daily token budget is spent; don't hold the request open.
+      if (err.retryAfter > 60) throw new Error(`Groq's daily limit is used up, so try again in about ${Math.ceil(err.retryAfter / 60)} minutes. The sample runs still work.`);
       const seconds = Math.min(Math.max(err.retryAfter, 2), 30);
       const id = `wait-${waitSeq++}`;
       const label = "Pausing for Groq's rate limit";
