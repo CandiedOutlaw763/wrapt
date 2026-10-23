@@ -18,13 +18,14 @@ An LLM on its own guesses gifts from stereotypes ("she likes indie music → vin
 4. **Agent 2, the personal shopper** (Groq key 2) sees the plan and the listings, may run `search_amazon` again for misses, and calls `submit_gifts` with one listing per idea plus the final reason.
 5. **Listings gendered for someone else are dropped** before the shopper sees them. With no gender given, only unisex or ungendered listings are kept, and the agents avoid sized clothing unless the notes give a size.
 6. **Every listing is checked against its idea** in one small Groq call (a book about an album isn't the album; a sewing book called "Tunic" isn't the game). A rejected listing is swapped for the idea's next candidate, which is checked too, before falling back to an Amazon search link.
-7. **The server assembles the gifts.** Taste trails (`from → via`, with Qloo affinity) come from the plan and are checked against the Qloo data. Each run reports how many gifts came through a Qloo connection to something the person never mentioned.
+7. **Ideas the store can't supply get one replacement round.** If an idea ends without a valid listing (nothing in stock, everything over budget, or only the wrong product), the strategist hears why and what that Amazon store showed instead, then proposes up to three replacements. A replacement can't reuse the brand or artist that just missed. Replacements are searched and checked like the rest. This step only runs when something failed.
+8. **The server assembles the gifts.** Taste trails (`from → via`, with Qloo affinity) come from the plan and are checked against the Qloo data. Each run reports how many gifts came through a Qloo connection to something the person never mentioned.
 
 ### Gifts to share
 
 Add yourself as a persona ("This is me"), then pick **Gift for: Maya and you**. Wrapt calls Qloo's `/v2/insights/compare` with both people's loves to find the taste tags you have in common, seeds the graph sweep with both sets of loves plus those shared tags, and the strategist plans gifts you'd enjoy together. The results open with "Where your tastes meet".
 
-Progress streams to the UI as NDJSON and drives the agent log. When Groq rate-limits a key, the agents fail over to the other key, and pause visibly if both are limited. Qloo and SerpApi responses are cached (in memory, or in Upstash Redis if configured) to protect quotas.
+Progress streams to the UI as NDJSON and drives the agent log. When Groq rate-limits a key, the agents fail over to the other key, and pause visibly if both are limited for a short time. Groq's free tier also gives each model a daily token budget, so when `gpt-oss-120b` is spent on both keys, calls move to `qwen/qwen3.8-27b`. The listing check runs on qwen first anyway: on our labelled idea/listing pairs it scored the same as gpt-oss-120b. If every model is out for the day, the run stops at once with a clear message instead of hanging. Qloo and SerpApi responses are cached (in memory, or in Upstash Redis if configured) to protect quotas.
 
 ## Demo results
 
@@ -49,6 +50,7 @@ npm run dev
 | `GROQ_API_KEY` | yes | Runs the taste strategist. https://console.groq.com/keys |
 | `GROQ_API_KEY_2` | recommended | Runs the personal shopper; each agent falls back to the other key |
 | `GROQ_MODEL` | no | Defaults to `openai/gpt-oss-120b` |
+| `GROQ_FALLBACK_MODELS` | no | Comma-separated models to use when the main one's daily budget is spent. Defaults to `qwen/qwen3.8-27b` |
 | `SERPAPI_KEY` | recommended | Amazon listings; 250 free searches/month |
 | `SERPAPI_KEY_2` | no | Takes over when the first key runs out |
 | `UPSTASH_REDIS_REST_URL` / `_TOKEN` | no | Persistent cache across serverless instances |
@@ -77,10 +79,11 @@ Import the repo into Vercel and add the env vars above. The `/api/gifts` route s
 - `signal.interests.entities` accepts comma-separated IDs; `signal.demographics.age` / `.gender` shift brand results noticeably.
 - `/search` takes `types=urn:entity:...` to filter by type.
 - `/v2/insights/compare` takes `a.signal.interests.entities` and `b.signal.interests.entities` and returns the shared tags with a score; region tags ("United States") come back too and say nothing about taste.
+- `signal.location.query` (a city or country) shifts brand results only a little once interest and demographic signals are set. A persona with strong tastes gets nearly the same brands with or without it, so Wrapt handles store availability in the agent loop instead.
 
 ## Stack
 
-Next.js 16 (App Router), Tailwind CSS 4, Fraunces + Schibsted Grotesk, Groq (OpenAI-compatible tool calling), Qloo Insights API, SerpApi. Personas and past runs are stored in the browser's localStorage.
+Next.js 16 (App Router), Tailwind CSS 4, Fraunces + Schibsted Grotesk, Groq (OpenAI-compatible tool calling; `gpt-oss-120b` with a `qwen3.8-27b` fallback), Qloo Insights API, SerpApi, Firebase Auth and Firestore, Upstash Redis, Vercel. Personas and past runs live in the browser's localStorage, or in Firestore once you sign in.
 
 ## License
 
