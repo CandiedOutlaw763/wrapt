@@ -11,6 +11,10 @@ import type { AgentEvent, AgentName, Gift, Occasion, Persona, Product, QlooEntit
 const GIFT_COUNT = 6;
 const STRATEGIST_TURNS = 4;
 const SHOPPER_TURNS = 4;
+/** Ideas the strategist may replace when Amazon has no valid listing for them (one extra turn, ≤ this many searches). */
+const MAX_REPLACEMENTS = 3;
+/** Past this point in a run, skip replacements so the request stays inside the route's time limit. */
+const REPLACE_DEADLINE_MS = 75_000;
 const STRATEGIST_LANE = 0;
 const SHOPPER_LANE = 1;
 
@@ -42,6 +46,7 @@ interface Idea {
   why: string;
   from: string;
   via?: string;
+  replaces?: number;
 }
 
 // ── Tool definitions ─────────────────────────────────────────────────────────
@@ -100,6 +105,10 @@ const PLAN_TOOL: ToolDef = {
               via: {
                 type: "string",
                 description: "The Qloo entity that bridged to the gift, spelled as in the profile. Omit if the gift is directly about the loved thing.",
+              },
+              replaces: {
+                type: "integer",
+                description: "Only when asked to replace missed ideas: the number of the missed idea this one takes the place of.",
               },
             },
             required: ["idea", "query", "why", "from"],
@@ -346,6 +355,7 @@ function candidates(results: Product[], budget: number): Product[] {
 }
 
 export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Persona): AsyncGenerator<AgentEvent> {
+  const started = Date.now();
   const sharing = !!(occasion.shared && giver?.loves.length);
   // ── 1. Read the persona's taste ────────────────────────────────────────────
   yield {
@@ -497,6 +507,8 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
   let ideas: Idea[] = [];
   let explores = 0;
   let revisedForGender = false;
+  // Ideas go through the same gender rule as listings ("men's climbing jacket" for Alex).
+  const fits = (i: Idea) => fitsGender({ title: `${i.idea} ${i.query}`, url: "", source: "serpapi" }, persona.gender);
 
   try {
     for (let turn = 0; turn < STRATEGIST_TURNS && !ideas.length; turn++) {
@@ -588,8 +600,6 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
         } else if (call.function.name === "submit_plan") {
           const args = parseArgs<{ ideas: Idea[] }>(call.function.arguments);
           const planned = (args?.ideas ?? []).filter((i) => i.query?.trim() && i.why?.trim()).slice(0, GIFT_COUNT);
-          // Ideas go through the same gender rule as listings ("men's climbing jacket" for Alex).
-          const fits = (i: Idea) => fitsGender({ title: `${i.idea} ${i.query}`, url: "", source: "serpapi" }, persona.gender);
           const misfits = planned.map((i, n) => (fits(i) ? 0 : n + 1)).filter(Boolean);
           if (misfits.length && !revisedForGender) {
             revisedForGender = true;
@@ -677,16 +687,19 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
   };
 
   const products = new Map<string, Product>();
-  const register = (p: Product) => {
+  // The search each ref came from, so a rejected pick falls back to its own search's other listings.
+  const origin = new Map<string, Product[]>();
+  const register = (p: Product, list: Product[]) => {
     const ref = `p${products.size + 1}`;
     products.set(ref, p);
+    origin.set(ref, list);
     return ref;
   };
   const listingLines = (list: Product[]) =>
     list
       .slice(0, 3)
       .map((p) => {
-        const ref = register(p);
+        const ref = register(p, list);
         return p.source === "search-link"
           ? `${ref}: (no listings; link to an Amazon search)`
           : `${ref}: ${p.title.slice(0, 70)} | ${p.priceDisplay ?? "price n/a"} | ${p.rating ?? "?"}★ (${p.reviews ?? 0})`;
@@ -819,29 +832,43 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
     ];
   };
 
-  const gifts: Gift[] = [];
-  const giftIdeas: { idea: Idea; n: number }[] = [];
+  // Each slot keeps its idea and every listing found for it, so later steps can swap the listing or the idea.
+  type Slot = { gift: Gift; idea: Idea; pool: Product[]; tried: Set<string>; miss?: string };
+  /** Why an idea has no usable listing, in words the strategist can act on. */
+  const missReason = (pool: Product[]) =>
+    pool.some((p) => p.source !== "search-link") ? `every listing was over ${formatMoney(occasion.budget, market)}` : "Amazon had no suitable listing";
+
+  const slots: Slot[] = [];
   const usedProducts = new Set<string>();
   ideas.forEach((idea, n) => {
     const pick = picks.find((p) => Number(p.idea) === n + 1 && !usedProducts.has(p.product_ref.trim()));
-    const product = pick ? products.get(pick.product_ref.trim())! : (candidates(results[n], occasion.budget)[0] ?? searchLink(idea.query, market.domain));
-    if (!product || usedProducts.has(product.url)) return;
-    usedProducts.add(pick?.product_ref.trim() ?? product.url);
+    const ref = pick?.product_ref.trim();
+    // A pick from the shopper's re-search brings that search's other listings along as fallbacks.
+    const searched = ref ? origin.get(ref) : undefined;
+    const pool = searched && searched !== results[n] ? [...searched, ...results[n]] : results[n];
+    const product = ref ? products.get(ref)! : (candidates(pool, occasion.budget)[0] ?? searchLink(idea.query, market.domain));
+    if (usedProducts.has(product.url)) return;
+    if (ref) usedProducts.add(ref);
     usedProducts.add(product.url);
-    gifts.push({
-      product,
-      headline: pick?.headline?.trim() || idea.idea,
-      reasoning: pick?.reasoning?.trim() || idea.why,
-      trail: trailFor(idea),
+    slots.push({
+      gift: {
+        product,
+        headline: pick?.headline?.trim() || idea.idea,
+        reasoning: pick?.reasoning?.trim() || idea.why,
+        trail: trailFor(idea),
+      },
+      idea,
+      pool,
+      tried: new Set([product.url]),
+      miss: product.source === "search-link" ? missReason(pool) : undefined,
     });
-    giftIdeas.push({ idea, n });
   });
 
   yield {
     type: "step",
     id: "pick",
     agent: "shopper",
-    label: `Chose ${gifts.length} gifts for ${persona.name}`,
+    label: `Chose ${slots.length} gifts for ${persona.name}`,
     detail: picks.length ? undefined : "Used the strategist's picks directly",
     status: "done",
   };
@@ -850,43 +877,44 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
   // The shopper sometimes settles for a near miss (a book about an album, a sewing book called
   // "Tunic" for the game). A small call checks each listing; a rejected one gets the idea's next
   // candidate (checked too), and only then falls back to an Amazon search for the idea.
-  const tried = gifts.map((g) => new Set([g.product.url]));
-  let pending = gifts.map((_, i) => i).filter((i) => gifts[i].product.source !== "search-link");
-  if (pending.length) {
+  async function* verify(targets: Slot[], rejected: string[]): AsyncGenerator<AgentEvent> {
+    let pending = targets.filter((s) => s.gift.product.source !== "search-link");
+    for (let round = 0; round < 2 && pending.length; round++) {
+      const reply = yield* llm("shopper", {
+        lane: STRATEGIST_LANE,
+        json: true,
+        temperature: 0,
+        maxTokens: 800,
+        messages: [
+          { role: "system", content: CHECK_PROMPT },
+          { role: "user", content: pending.map((s, k) => `${k + 1}. Idea: ${s.idea.idea}\n   Listing: ${s.gift.product.title}`).join("\n") },
+        ],
+      });
+      const checks = parseArgs<{ checks?: { ok?: boolean; reason?: string }[] }>(reply.content ?? "")?.checks ?? [];
+      const taken = new Set([...slots, ...targets].map((s) => s.gift.product.url));
+      const recheck: Slot[] = [];
+      pending.forEach((s, k) => {
+        if (checks[k]?.ok !== false) return;
+        const reason = checks[k]?.reason?.trim();
+        rejected.push(reason ? `${s.idea.idea}: ${reason}` : s.idea.idea);
+        const next = round === 0 ? candidates(s.pool, occasion.budget).find((p) => !s.tried.has(p.url) && !taken.has(p.url)) : undefined;
+        // The shopper's words described the rejected listing, so use the strategist's.
+        s.gift = { ...s.gift, product: next ?? searchLink(s.idea.query, market.domain), headline: s.idea.idea, reasoning: s.idea.why };
+        if (next) {
+          s.tried.add(next.url);
+          taken.add(next.url);
+          recheck.push(s);
+        } else s.miss = reason ? `its listings were the wrong product (${reason})` : "its listings were the wrong product";
+      });
+      pending = recheck;
+    }
+  }
+
+  if (slots.some((s) => s.gift.product.source !== "search-link")) {
     yield { type: "step", id: "check", agent: "shopper", label: "Double-checking each listing against its idea", status: "running" };
-    let swapped = 0;
-    const why: string[] = [];
+    const rejected: string[] = [];
     try {
-      for (let round = 0; round < 2 && pending.length; round++) {
-        const reply = yield* llm("shopper", {
-          lane: STRATEGIST_LANE,
-          json: true,
-          temperature: 0,
-          maxTokens: 800,
-          messages: [
-            { role: "system", content: CHECK_PROMPT },
-            { role: "user", content: pending.map((i, k) => `${k + 1}. Idea: ${giftIdeas[i].idea.idea}\n   Listing: ${gifts[i].product.title}`).join("\n") },
-          ],
-        });
-        const checks = parseArgs<{ checks?: { ok?: boolean; reason?: string }[] }>(reply.content ?? "")?.checks ?? [];
-        const ok = checks.map((c) => c?.ok);
-        const recheck: number[] = [];
-        pending.forEach((i, k) => {
-          if (ok[k] !== false) return;
-          const { idea, n } = giftIdeas[i];
-          if (checks[k]?.reason) why.push(`${idea.idea}: ${checks[k].reason}`);
-          const taken = new Set(gifts.map((g) => g.product.url));
-          const next = round === 0 ? candidates(results[n], occasion.budget).find((p) => !tried[i].has(p.url) && !taken.has(p.url)) : undefined;
-          // The shopper's words described the rejected listing, so use the strategist's.
-          gifts[i] = { ...gifts[i], product: next ?? searchLink(idea.query, market.domain), headline: idea.idea, reasoning: idea.why };
-          swapped++;
-          if (next) {
-            tried[i].add(next.url);
-            recheck.push(i);
-          }
-        });
-        pending = recheck;
-      }
+      yield* verify(slots, rejected);
     } catch (err) {
       console.warn("[agent] listing check skipped:", (err as Error).message);
     }
@@ -895,11 +923,115 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
       id: "check",
       agent: "shopper",
       label: "Double-checked each listing against its idea",
-      detail: swapped ? `Swapped out ${swapped} listing${swapped > 1 ? "s" : ""} that didn't match. ${why.slice(0, 3).join("; ")}` : "Every listing matches its idea",
+      detail: rejected.length ? `Swapped out ${rejected.length} listing${rejected.length > 1 ? "s" : ""} that didn't match. ${rejected.slice(0, 3).join("; ")}` : "Every listing matches its idea",
       status: "done",
     };
   }
 
-  yield { type: "gifts", gifts };
+  // ── 8. Rethink ideas Amazon couldn't supply ───────────────────────────────
+  // Only when something failed: the strategist hears why each idea missed and gets one more turn
+  // to replace them. Replacements are searched (at most MAX_REPLACEMENTS) and checked like the rest.
+  async function* replan(count: number): AsyncGenerator<AgentEvent, Idea[]> {
+    // What the store did return for a missed idea shows what it stocks (generic look-alikes, other brands).
+    const shown = (s: Slot) => {
+      const titles = s.pool.filter((p) => p.source !== "search-link").slice(0, 3).map((p) => p.title.slice(0, 60));
+      return titles.length ? `; Amazon showed: ${titles.join(" / ")}` : "";
+    };
+    const report = slots.map((s, i) => `${i + 1}. ${s.idea.idea}: ${s.gift.product.source === "search-link" ? `MISSED, ${s.miss ?? missReason(s.pool)}${shown(s)}` : "found"}`);
+    const more = explored.flat();
+    const messages: Message[] = [
+      { role: "system", content: STRATEGIST_PROMPT },
+      { role: "user", content: strategistBrief(persona, occasion, profile, market, sharing ? giver : undefined) },
+      {
+        role: "user",
+        content: [
+          `The shopper searched ${market.domain} for your plan:`,
+          ...report,
+          ...(more.length ? [`ALSO FROM YOUR EXPLORING: ${fmtEntities(more, true)}`] : []),
+          "",
+          `Plan ${count} new idea${count > 1 ? "s" : ""} to fill the missed places. Same rules, plus:`,
+          "- different from every idea above, and not from the brand, artist or author of a missed idea (the store doesn't carry them);",
+          "- an idea that missed on budget needs something clearly cheaper;",
+          `- one Amazon had no listing for needs a product ${market.domain} surely stocks, such as a widely sold book or record, or a brand's main product line;`,
+          "- one whose listings were the wrong product needs a more specific, real product name;",
+          '- keep "via" on a QLOO TASTE GRAPH entity where you can;',
+          '- set "replaces" to the number of the missed idea each new one takes the place of.',
+          `Call submit_plan with only the ${count} new idea${count > 1 ? "s" : ""}.`,
+        ].join("\n"),
+      },
+    ];
+    const planned = new Set(ideas.map((i) => i.query.toLowerCase().trim()));
+    // Another product from a brand the store just failed on misses too ("Ban.do planner" → "Ban.do Good Vibes planner").
+    const brandOf = (query: string) => query.toLowerCase().trim().replace(/^(the|a|an)\s+/, "").split(/\s+/)[0];
+    const missedBrands = new Set(slots.filter((s) => s.gift.product.source === "search-link").map((s) => brandOf(s.idea.query)));
+    for (let turn = 0; turn < 2; turn++) {
+      // On the shopper's key: the strategist's key has just run the listing check.
+      const reply = yield* llm("strategist", {
+        lane: SHOPPER_LANE,
+        maxTokens: 1200,
+        messages,
+        tools: [EXPLORE_TOOL, PLAN_TOOL],
+        toolChoice: "required",
+      });
+      messages.push({ role: "assistant", content: reply.content ?? "", tool_calls: reply.toolCalls });
+      for (const call of reply.toolCalls) {
+        if (call.function.name === "submit_plan") {
+          const fresh = (parseArgs<{ ideas: Idea[] }>(call.function.arguments)?.ideas ?? []).filter(
+            (i) => i.query?.trim() && i.why?.trim() && !planned.has(i.query.toLowerCase().trim()) && !missedBrands.has(brandOf(i.query)) && fits(i),
+          );
+          if (fresh.length) return fresh.slice(0, count);
+        }
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content:
+            call.function.name === "submit_plan"
+              ? "None of those were usable: each must be new, and not from the brand, artist or author of a missed idea. Submit again."
+              : "No more exploring now. Call submit_plan with the new ideas.",
+        });
+      }
+    }
+    return [];
+  }
+
+  const open = slots.filter((s) => s.gift.product.source === "search-link");
+  const need = Math.min(MAX_REPLACEMENTS, open.length + Math.max(0, GIFT_COUNT - slots.length));
+  if (need && Date.now() - started < REPLACE_DEADLINE_MS) {
+    const label = `Rethinking ${need} idea${need > 1 ? "s" : ""} Amazon couldn't supply`;
+    yield { type: "step", id: "replace", agent: "strategist", label, detail: open.map((s) => s.idea.idea).join(", ") || undefined, status: "running" };
+    let detail = "Nothing better on Amazon, so those stay as searches";
+    try {
+      const fresh = yield* replan(need);
+      if (fresh.length) {
+        const found = await Promise.all(fresh.map((i) => shop(i.query)));
+        const taken = new Set(slots.map((s) => s.gift.product.url));
+        const trials: Slot[] = [];
+        fresh.forEach((idea, k) => {
+          const product = candidates(found[k], occasion.budget).find((p) => !taken.has(p.url));
+          if (!product) return;
+          taken.add(product.url);
+          trials.push({ gift: { product, headline: idea.idea, reasoning: idea.why, trail: trailFor(idea) }, idea, pool: found[k], tried: new Set([product.url]) });
+        });
+        yield* verify(trials, []);
+        // A verified replacement takes the place of the idea it names, else the first search link, else an empty place.
+        const winners = trials.filter((s) => s.gift.product.source !== "search-link");
+        for (const w of winners) {
+          const named = Number(w.idea.replaces) - 1;
+          const i = slots[named]?.gift.product.source === "search-link" ? named : slots.findIndex((s) => s.gift.product.source === "search-link");
+          if (i >= 0) slots[i] = w;
+          else slots.push(w);
+        }
+        const missed = fresh.filter((i) => !winners.some((w) => w.idea === i)).map((i) => i.idea);
+        detail = [winners.length && `Swapped in ${winners.map((s) => s.idea.idea).join(", ")}`, missed.length && `No match on Amazon for ${missed.join(", ")}`]
+          .filter(Boolean)
+          .join(". ");
+      }
+    } catch (err) {
+      console.warn("[agent] replacement skipped:", (err as Error).message);
+    }
+    yield { type: "step", id: "replace", agent: "strategist", label, detail, status: "done" };
+  }
+
+  yield { type: "gifts", gifts: slots.map((s) => s.gift) };
   yield { type: "done" };
 }
