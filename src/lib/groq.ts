@@ -30,6 +30,10 @@ export interface ChatOptions {
   maxTokens?: number;
   /** Preferred key index; other keys are fallbacks. */
   lane?: number;
+  /** Models to try in order; defaults to MODELS. */
+  models?: string[];
+  /** A rate limit that clears within this many seconds is waited out rather than moving to the next model. */
+  maxWait?: number;
 }
 
 export interface Reply {
@@ -38,6 +42,12 @@ export interface Reply {
 }
 
 export const MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
+
+// Groq's free tier gives every model its own daily token budget, so when the main model's is spent
+// on every key, the next model in line takes over instead of the run failing.
+export const MODELS = [MODEL, ...(process.env.GROQ_FALLBACK_MODELS ?? "qwen/qwen3.8-27b").split(",").map((m) => m.trim())].filter(
+  (m, i, all) => m && all.indexOf(m) === i,
+);
 
 const KEYS = [process.env.GROQ_API_KEY, process.env.GROQ_API_KEY_2].filter(Boolean) as string[];
 
@@ -59,14 +69,30 @@ function retryAfterSeconds(res: Response, text: string): number {
 
 export async function chat(opts: ChatOptions): Promise<Reply> {
   if (!KEYS.length) throw new Error("GROQ_API_KEY is not set.");
+  let soonest = Infinity;
+  for (const model of opts.models ?? MODELS) {
+    try {
+      return await chatWith(model, opts);
+    } catch (err) {
+      if (!(err instanceof RateLimited)) throw err;
+      // A short wait for a better model beats a weaker one; a daily limit moves on to the next model.
+      if (err.retryAfter <= (opts.maxWait ?? 60)) throw err;
+      soonest = Math.min(soonest, err.retryAfter);
+      console.warn(`[groq] ${model} is rate limited for ${err.retryAfter}s on every key; trying the next model`);
+    }
+  }
+  throw new RateLimited(Math.ceil(soonest));
+}
+
+async function chatWith(model: string, opts: ChatOptions): Promise<Reply> {
   const body: Record<string, unknown> = {
-    model: MODEL,
+    model,
     messages: opts.messages,
     temperature: opts.temperature ?? 0.6,
     max_completion_tokens: opts.maxTokens ?? 2048,
   };
   // gpt-oss reasons before answering; those tokens count against the per-minute budget.
-  if (MODEL.startsWith("openai/gpt-oss")) body.reasoning_effort = "low";
+  if (model.startsWith("openai/gpt-oss")) body.reasoning_effort = "low";
   if (opts.tools) {
     body.tools = opts.tools;
     body.tool_choice = opts.toolChoice ?? "auto";

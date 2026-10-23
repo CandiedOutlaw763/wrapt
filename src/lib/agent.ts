@@ -1,4 +1,4 @@
-import { chat, RateLimited, type ChatOptions, type Message, type Reply, type ToolDef } from "./groq";
+import { chat, MODELS, RateLimited, type ChatOptions, type Message, type Reply, type ToolDef } from "./groq";
 import { compareTaste, insights, searchTags } from "./qloo";
 import { searchLink, searchProducts } from "./products";
 import { formatMoney, marketFor, type Market } from "./markets";
@@ -15,6 +15,9 @@ const SHOPPER_TURNS = 4;
 const MAX_REPLACEMENTS = 3;
 /** Past this point in a run, skip replacements so the request stays inside the route's time limit. */
 const REPLACE_DEADLINE_MS = 75_000;
+// The listing check runs on qwen (as accurate as gpt-oss-120b on the labelled pairs) to save the
+// main model's daily budget for planning; if qwen is busy it moves on rather than waiting.
+const CHECK_MODELS = [...new Set(["qwen/qwen3.8-27b", ...MODELS])];
 const STRATEGIST_LANE = 0;
 const SHOPPER_LANE = 1;
 
@@ -884,6 +887,8 @@ export async function* runAgent(persona: Persona, occasion: Occasion, giver?: Pe
     for (let round = 0; round < 2 && pending.length; round++) {
       const reply = yield* llm("shopper", {
         lane: STRATEGIST_LANE,
+        models: CHECK_MODELS,
+        maxWait: 0,
         json: true,
         temperature: 0,
         maxTokens: 800,
