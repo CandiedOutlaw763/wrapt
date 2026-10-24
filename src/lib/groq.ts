@@ -67,6 +67,30 @@ function retryAfterSeconds(res: Response, text: string): number {
   return m ? Number(m[1] ?? 0) * 60 + Number(m[2]) : 10;
 }
 
+// Sometimes the model writes a tool's arguments as plain text instead of calling it. Groq rejects that
+// (400 tool_use_failed) but sends back what was written. If it is a JSON object holding every required
+// field of exactly one tool, it was meant as that call, so use it rather than asking again.
+function salvageToolCall(text: string, tools: ToolDef[]): ToolCall | undefined {
+  try {
+    const generated = (JSON.parse(text) as { error?: { failed_generation?: string } }).error?.failed_generation ?? "";
+    let args = JSON.parse(generated.slice(generated.indexOf("{"), generated.lastIndexOf("}") + 1)) as Record<string, unknown>;
+    // Some replies wrap the call as {"name": …, "arguments": {…}}.
+    const named = tools.find((t) => t.function.name === args.name);
+    if (named && args.arguments && typeof args.arguments === "object") args = args.arguments as Record<string, unknown>;
+    const fits = named
+      ? [named]
+      : tools.filter((t) => {
+          const required = (t.function.parameters.required as string[] | undefined) ?? [];
+          return required.length > 0 && required.every((k) => k in args);
+        });
+    if (fits.length !== 1) return undefined;
+    console.warn(`[groq] recovered a ${fits[0].function.name} call the model wrote as text`);
+    return { id: `recovered-${Date.now()}`, type: "function", function: { name: fits[0].function.name, arguments: JSON.stringify(args) } };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function chat(opts: ChatOptions): Promise<Reply> {
   if (!KEYS.length) throw new Error("GROQ_API_KEY is not set.");
   let soonest = Infinity;
@@ -117,6 +141,10 @@ async function chatWith(model: string, opts: ChatOptions): Promise<Reply> {
         return { content: msg.content, toolCalls: msg.tool_calls ?? [] };
       }
       const text = await res.text();
+      if (res.status === 400 && opts.tools && text.includes("tool_use_failed")) {
+        const call = salvageToolCall(text, opts.tools);
+        if (call) return { content: null, toolCalls: [call] };
+      }
       if (res.status === 429) {
         soonest = Math.min(soonest, retryAfterSeconds(res, text));
         break; // try the next key
