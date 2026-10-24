@@ -4,7 +4,7 @@ Build a persona for someone you shop for. Wrapt's agent reads their taste throug
 
 > Phoebe Bridgers → **Polaroid** (90% affinity) → Polaroid Now+ instant camera
 
-Built for the [Qloo Agentic Hackathon]([https://qloo-hackathon.devpost.com/](https://qloo.devpost.com/)).
+Built for the [Qloo Agentic Hackathon](https://qloo.devpost.com/).
 
 ## Why Qloo matters here
 
