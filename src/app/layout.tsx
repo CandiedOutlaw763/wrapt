@@ -14,7 +14,7 @@ const schibsted = Schibsted_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "Wrapt: gifts that get them",
+  title: "Wrapt: gifts wrapped with taste",
   description: "Describe someone you love. Wrapt reads their taste through Qloo and finds real gifts that fit, with the reason behind each one.",
 };
 

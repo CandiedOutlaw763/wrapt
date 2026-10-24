@@ -1,4 +1,4 @@
-# Wrapt — gifts that get them
+# Wrapt — gifts wrapped with taste
 
 Build a persona for someone you shop for. Wrapt's agent reads their taste through **Qloo's taste graph**, explores the strongest cross-domain signals, searches real Amazon listings, and hands back gifts with the *taste trail* behind each pick:
 
